@@ -67,6 +67,8 @@ const SCHEMA = [
 const MIGRATIONS = [
   // Email enables the password-reset flow; older user rows simply have NULL.
   'ALTER TABLE users ADD COLUMN email TEXT',
+  // Track who last saved a report (username) for the "last modified by" display.
+  'ALTER TABLE reports ADD COLUMN modified_by TEXT',
 ];
 
 const isDuplicateColumn = (err) => /duplicate column/i.test(err?.message || '');

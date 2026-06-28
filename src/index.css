@@ -1444,3 +1444,123 @@ textarea {
 .modal-actions {
   margin-top: 16px;
 }
+
+/* ---------- Presence (collaborators in a report) ---------- */
+.presence-bar {
+  display: flex;
+  align-items: center;
+}
+
+.presence-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  margin-left: -8px;
+  border: 2px solid #fff;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: default;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+.presence-avatar:first-child {
+  margin-left: 0;
+}
+
+.presence-avatar.is-me {
+  outline: 2px solid var(--magenta);
+  outline-offset: 1px;
+}
+
+.presence-more {
+  background: #6b7280;
+  font-size: 10px;
+}
+
+/* ---------- Home: "working now" + last-modified-by ---------- */
+.report-working {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #1e7e46;
+  background: #eafaf1;
+  border: 1px solid #b7e4c7;
+  padding: 1px 8px;
+  border-radius: 999px;
+  margin-left: 8px;
+}
+
+.report-working-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #2a9d46;
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* ---------- Lockable section panels ---------- */
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.panel-head h3 {
+  margin: 0 0 6px;
+}
+
+.lock-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 999px;
+  margin-bottom: 6px;
+  background: #fdecea;
+  border: 1px solid #f5c2bd;
+  color: #c0392b;
+}
+
+.lock-badge.mine {
+  background: #eafaf1;
+  border-color: #b7e4c7;
+  color: #1e7e46;
+}
+
+.lock-panel.is-locked {
+  position: relative;
+  opacity: 0.92;
+}
+
+.lock-panel.is-locked::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(192, 57, 43, 0.04),
+    rgba(192, 57, 43, 0.04) 10px,
+    transparent 10px,
+    transparent 20px
+  );
+  pointer-events: none;
+}
+
+.lock-panel.is-mine {
+  box-shadow: 0 0 0 2px rgba(30, 126, 70, 0.25);
+}

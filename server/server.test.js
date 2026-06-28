@@ -250,3 +250,139 @@ describe('Forgot / reset password', () => {
     expect(reuse.status).toBe(400);
   });
 });
+
+describe('Collaboration: section saves, presence, locks', () => {
+  // A report with two squads so we can prove section-scoped, non-clobbering saves.
+  const collabData = () => ({
+    report: { title: 'Collab', month: 'June 2026', company: 'Q' },
+    teams: [
+      {
+        id: 't1',
+        name: 'Team 1',
+        projects: [
+          {
+            id: 'p1',
+            name: 'Proj 1',
+            squads: [
+              { id: 's1', name: 'Squad A', defects: [], deliverables: ['x'] },
+              { id: 's2', name: 'Squad B', defects: [] },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+
+  let reportId;
+  beforeAll(async () => {
+    const res = await request(app).post('/api/reports').send({ data: collabData(), modifiedBy: 'admin' });
+    reportId = res.body.id;
+  });
+
+  test('records modifiedBy and resolves the display name on list/get', async () => {
+    const got = await request(app).get(`/api/reports/${reportId}`);
+    expect(got.body.modifiedBy).toBe('admin');
+    expect(got.body.modifiedByName).toBe('Admin'); // resolved via users JOIN
+    const list = await request(app).get('/api/reports');
+    expect(list.body.find((r) => r.id === reportId).modifiedByName).toBe('Admin');
+  });
+
+  test('PATCH squad merges only that section, leaving others intact', async () => {
+    // Two independent section patches to the SAME squad must both survive.
+    await request(app)
+      .patch(`/api/reports/${reportId}/squad/s1`)
+      .send({ patch: { defects: [{ severity: 'High', open: 2 }] }, modifiedBy: 'asha' });
+    await request(app)
+      .patch(`/api/reports/${reportId}/squad/s1`)
+      .send({ patch: { deliverables: ['done thing'] }, modifiedBy: 'asha' });
+
+    const got = await request(app).get(`/api/reports/${reportId}`);
+    const s1 = got.body.data.teams[0].projects[0].squads[0];
+    expect(s1.defects).toEqual([{ severity: 'High', open: 2 }]);
+    expect(s1.deliverables).toEqual(['done thing']); // first patch not clobbered
+    expect(got.body.modifiedBy).toBe('asha');
+    // The other squad is untouched.
+    expect(got.body.data.teams[0].projects[0].squads[1].name).toBe('Squad B');
+  });
+
+  test('PATCH structure renames/adds squads but preserves section data', async () => {
+    // Seed some section data on s1 first.
+    await request(app)
+      .patch(`/api/reports/${reportId}/squad/s1`)
+      .send({ patch: { deliverables: ['keep me'] } });
+
+    // Rename s1, add a new squad s3, change report meta — all via structure.
+    const got = await request(app).get(`/api/reports/${reportId}`);
+    const teams = got.body.data.teams;
+    teams[0].projects[0].squads[0].name = 'Squad A renamed';
+    teams[0].projects[0].squads.push({ id: 's3', name: 'Squad C', defects: [] });
+
+    const res = await request(app)
+      .patch(`/api/reports/${reportId}/structure`)
+      .send({ report: { title: 'Collab v2' }, teams, modifiedBy: 'admin' });
+    expect(res.status).toBe(200);
+
+    const after = await request(app).get(`/api/reports/${reportId}`);
+    const squads = after.body.data.teams[0].projects[0].squads;
+    expect(squads[0].name).toBe('Squad A renamed');
+    expect(squads[0].deliverables).toEqual(['keep me']); // section data preserved
+    expect(squads.find((s) => s.id === 's3')).toBeTruthy(); // new squad added
+    expect(after.body.title).toBe('Collab v2'); // report meta applied
+  });
+
+  test('PATCH squad 404s for an unknown squad', async () => {
+    const res = await request(app)
+      .patch(`/api/reports/${reportId}/squad/nope`)
+      .send({ patch: { name: 'x' } });
+    expect(res.status).toBe(404);
+  });
+
+  test('presence heartbeat returns who is here + locks + meta', async () => {
+    const res = await request(app)
+      .post(`/api/reports/${reportId}/presence`)
+      .send({ username: 'asha', name: 'Asha Rao' });
+    expect(res.status).toBe(200);
+    expect(res.body.presence.find((u) => u.username === 'asha').name).toBe('Asha Rao');
+    expect(res.body.meta.id).toBe(reportId);
+    expect(res.body.meta.modifiedAt).toBeTruthy();
+  });
+
+  test('section lock is exclusive, then releasable', async () => {
+    const a = await request(app)
+      .post(`/api/reports/${reportId}/lock`)
+      .send({ username: 'asha', name: 'Asha Rao', section: 's1:defects' });
+    expect(a.status).toBe(200);
+    expect(a.body.ok).toBe(true);
+
+    // Someone else can't take the same section.
+    const b = await request(app)
+      .post(`/api/reports/${reportId}/lock`)
+      .send({ username: 'test1', name: 'Test One', section: 's1:defects' });
+    expect(b.status).toBe(409);
+    expect(b.body.owner.username).toBe('asha');
+
+    // But a different section of the same squad is free.
+    const c = await request(app)
+      .post(`/api/reports/${reportId}/lock`)
+      .send({ username: 'test1', name: 'Test One', section: 's1:deliverables' });
+    expect(c.status).toBe(200);
+
+    // After asha releases, test1 can take it.
+    await request(app).delete(`/api/reports/${reportId}/lock`).send({ username: 'asha', section: 's1:defects' });
+    const d = await request(app)
+      .post(`/api/reports/${reportId}/lock`)
+      .send({ username: 'test1', name: 'Test One', section: 's1:defects' });
+    expect(d.status).toBe(200);
+  });
+
+  test('home summary lists reports with active users, and leave clears it', async () => {
+    await request(app).post(`/api/reports/${reportId}/presence`).send({ username: 'asha', name: 'Asha Rao' });
+    const summary = await request(app).get('/api/presence');
+    expect(summary.body[reportId]).toBeTruthy();
+
+    await request(app).post(`/api/reports/${reportId}/leave`).send({ username: 'asha' });
+    await request(app).post(`/api/reports/${reportId}/leave`).send({ username: 'test1' });
+    const after = await request(app).get('/api/presence');
+    expect(after.body[reportId]).toBeUndefined();
+  });
+});

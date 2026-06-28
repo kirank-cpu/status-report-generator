@@ -27,12 +27,14 @@ function ReportRow({
   isActive,
   isCurrent,
   busy,
+  working,
   onOpen,
   onDownloadPptx,
   onDownloadJson,
   onDuplicate,
   onDelete,
 }) {
+  const workingNames = (working || []).map((u) => u.name);
   return (
     <div className={`report-row ${isActive ? 'is-active' : ''}`}>
       <div className="report-row-main">
@@ -40,11 +42,24 @@ function ReportRow({
           <span className="report-month">{report.month || '—'}</span>
           {isCurrent && <span className="report-badge">Current</span>}
           <span className="report-row-name">{report.title || 'Untitled report'}</span>
+          {workingNames.length > 0 && (
+            <span className="report-working" title={workingNames.join(', ')}>
+              <span className="report-working-dot" /> {workingNames.length === 1
+                ? `${workingNames[0]} is editing`
+                : `${workingNames.length} people editing`}
+            </span>
+          )}
         </div>
         <div className="report-row-meta">
           <span>Created {fmtDate(report.createdAt)}</span>
           <span className="report-meta-dot">•</span>
           <span>Modified {fmtDate(report.modifiedAt)}</span>
+          {report.modifiedByName && (
+            <>
+              <span className="report-meta-dot">•</span>
+              <span>by {report.modifiedByName}</span>
+            </>
+          )}
         </div>
       </div>
       <div className="report-row-actions">
@@ -72,7 +87,7 @@ function ReportRow({
   );
 }
 
-function Section({ title, reports, isCurrent, isManager, activeReportId, busyId, handlers }) {
+function Section({ title, reports, isCurrent, isManager, activeReportId, busyId, presence, handlers }) {
   if (!reports.length) return null;
   return (
     <>
@@ -86,6 +101,7 @@ function Section({ title, reports, isCurrent, isManager, activeReportId, busyId,
             isManager={isManager}
             isActive={r.id === activeReportId}
             busy={r.id === busyId}
+            working={presence?.[r.id]}
             {...handlers}
           />
         ))}
@@ -101,6 +117,7 @@ export default function MsrArchive({
   isManager,
   activeReportId,
   busyId,
+  presence,
   onOpen,
   onNew,
   onRefresh,
@@ -114,7 +131,7 @@ export default function MsrArchive({
   const previous = reports.filter((r) => norm(r.month) !== thisMonth);
 
   const handlers = { onOpen, onDownloadPptx, onDownloadJson, onDuplicate, onDelete };
-  const sectionProps = { isManager, activeReportId, busyId, handlers };
+  const sectionProps = { isManager, activeReportId, busyId, presence, handlers };
 
   return (
     <div className="home-archive">
