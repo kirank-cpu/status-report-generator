@@ -48,6 +48,7 @@ const verifyBody = (link, ttlMinutes) => ({
     `If you didn't create this account, you can ignore this email.`,
   html:
     `<div style="font-family:Segoe UI,Arial,sans-serif;max-width:480px;margin:auto">` +
+    `<pstyle="color:#666;font-size:15px>Hi there!, </p> <br/>` +
     `<h2 style="color:#b5179e">Confirm your email</h2>` +
     `<p>Welcome to Status Report Generator! Confirm your email to activate your account.</p>` +
     `<p><a href="${link}" style="display:inline-block;background:#b5179e;color:#fff;` +
