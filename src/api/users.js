@@ -34,6 +34,20 @@ export const changePassword = (username, currentPassword, newPassword) =>
 export const updateEmail = (username, email) =>
   request('/account/email', { method: 'PUT', body: JSON.stringify({ username, email }) });
 
+// ── Sign-up + email verification (pre-login) ──────────────────────────────
+
+// Create a pending account. Resolves with a generic message; the server emails a
+// verification link. Throws with a clear message on validation errors.
+export const signup = (username, email, password, name) =>
+  request('/auth/signup', {
+    method: 'POST',
+    body: JSON.stringify({ username, email, password, name }),
+  });
+
+// Verify an email address from the link's token.
+export const verifyEmail = (token) =>
+  request('/auth/verify-email', { method: 'POST', body: JSON.stringify({ token }) });
+
 // ── Forgot / reset (pre-login) ────────────────────────────────────────────
 
 // Request a reset link. Always resolves with a generic message (no enumeration).

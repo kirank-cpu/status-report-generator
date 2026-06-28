@@ -12,6 +12,7 @@ process.env.MSR_DB_FILE = TMP_DB;
 const request = require('supertest');
 const app = require('./server');
 const resets = require('./resetStore');
+const verifications = require('./verifyStore');
 
 const sampleData = (month = 'June 2026', title = 'Monthly Status Report') => ({
   report: { title, month, company: 'Everforth Quinnox' },
@@ -248,6 +249,54 @@ describe('Forgot / reset password', () => {
     // Token is single-use.
     const reuse = await request(app).post('/api/auth/reset-password').send({ token, newPassword: 'another12' });
     expect(reuse.status).toBe(400);
+  });
+});
+
+describe('Sign-up, email verification, and approval', () => {
+  test('signup creates a pending, unverified employee', async () => {
+    const res = await request(app)
+      .post('/api/auth/signup')
+      .send({ username: 'newjoiner', email: 'newjoiner@personal.com', password: 'secret1', name: 'New Joiner' });
+    expect(res.status).toBe(201);
+    const list = await request(app).get('/api/users');
+    const u = list.body.find((x) => x.username === 'newjoiner');
+    expect(u.role).toBe('employee');
+    expect(u.status).toBe('pending');
+    expect(u.emailVerified).toBe(false);
+    expect(u.squads).toEqual([]);
+  });
+
+  test('login is blocked (403) until the email is verified', async () => {
+    const res = await request(app).post('/api/auth/login').send({ username: 'newjoiner', password: 'secret1' });
+    expect(res.status).toBe(403);
+  });
+
+  test('signup rejects duplicate username and duplicate email', async () => {
+    expect(
+      (await request(app).post('/api/auth/signup').send({ username: 'newjoiner', email: 'x@personal.com', password: 'secret1' })).status
+    ).toBe(400);
+    expect(
+      (await request(app).post('/api/auth/signup').send({ username: 'other2', email: 'newjoiner@personal.com', password: 'secret1' })).status
+    ).toBe(400);
+  });
+
+  test('verify-email rejects a bad token, accepts a valid one, then login works', async () => {
+    expect((await request(app).post('/api/auth/verify-email').send({ token: 'nope' })).status).toBe(400);
+    const { token } = await verifications.createToken('newjoiner');
+    const ok = await request(app).post('/api/auth/verify-email').send({ token });
+    expect(ok.status).toBe(200);
+    const login = await request(app).post('/api/auth/login').send({ username: 'newjoiner', password: 'secret1' });
+    expect(login.status).toBe(200);
+    expect(login.body.status).toBe('pending'); // verified but still awaiting approval
+  });
+
+  test('admin approval activates the account and assigns squads', async () => {
+    const res = await request(app)
+      .put('/api/users/newjoiner')
+      .send({ username: 'newjoiner', name: 'New Joiner', role: 'employee', status: 'active', squads: ['Servicing Hub'] });
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('active');
+    expect(res.body.squads).toEqual(['Servicing Hub']);
   });
 });
 

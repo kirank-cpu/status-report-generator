@@ -3,7 +3,7 @@ import { useState } from 'react';
 const NEW = '__new__';
 const ROLES = ['admin', 'manager', 'employee'];
 
-const blankForm = () => ({ username: '', password: '', name: '', email: '', role: 'employee', squads: new Set() });
+const blankForm = () => ({ username: '', password: '', name: '', email: '', role: 'employee', status: 'active', squads: new Set() });
 
 // Admin-only screen: create/remove accounts and set each one's role. For
 // employees, pick squad access from the central organisation (matched by name,
@@ -27,6 +27,7 @@ export default function RoleManager({ users, organisation, currentUsername, onSa
       name: u.name || '',
       email: u.email || '',
       role: u.role,
+      status: u.status || 'active',
       squads: new Set(u.squads || []),
     });
   };
@@ -46,7 +47,9 @@ export default function RoleManager({ users, organisation, currentUsername, onSa
     });
   };
 
-  const save = async () => {
+  // `approve` (used by the "Approve & Save" button) flips a pending sign-up to
+  // active; otherwise the existing status is kept.
+  const save = async (approve = false) => {
     const username = form.username.trim();
     if (!username) return setError('Username is required.');
     if (!editing && !form.password) return setError('Password is required for a new account.');
@@ -59,12 +62,13 @@ export default function RoleManager({ users, organisation, currentUsername, onSa
       name: form.name.trim() || username,
       email: form.email.trim(),
       role: form.role,
+      status: approve ? 'active' : form.status,
       squads: form.role === 'employee' ? [...form.squads] : [],
     };
     const result = await onSave(payload, editing ? selected : null);
     if (result?.error) return setError(result.error);
     setSelected(username);
-    setForm((f) => ({ ...f, password: '' }));
+    setForm((f) => ({ ...f, password: '', status: payload.status }));
   };
 
   const remove = async () => {
@@ -81,11 +85,13 @@ export default function RoleManager({ users, organisation, currentUsername, onSa
   const changeRole = async (u, role) => {
     setError('');
     const result = await onSave(
-      { username: u.username, password: '', name: u.name, email: u.email || '', role, squads: u.squads || [] },
+      { username: u.username, password: '', name: u.name, email: u.email || '', role, status: u.status || 'active', squads: u.squads || [] },
       u.username
     );
     if (result?.error) setError(result.error);
   };
+
+  const pending = users.filter((u) => (u.status || 'active') === 'pending');
 
   const squadsLabel = (u) =>
     u.role === 'employee' && u.squads?.length ? u.squads.join(', ') : '—';
@@ -97,6 +103,50 @@ export default function RoleManager({ users, organisation, currentUsername, onSa
         Create or remove accounts and set each one&apos;s role. Admins manage the organisation and
         roles; managers edit any report; employees edit only their assigned squads.
       </p>
+
+      {pending.length > 0 && (
+        <div className="panel panel-pending">
+          <h3>Pending sign-ups ({pending.length})</h3>
+          <p className="hint">
+            People who signed up themselves. Review each one, assign squads, and approve to grant
+            edit access. Until approved they can only view reports.
+          </p>
+          <div className="table-scroll">
+            <table className="grid">
+              <thead>
+                <tr>
+                  <th className="col-wide">Name</th>
+                  <th>Username</th>
+                  <th className="col-wide">Email</th>
+                  <th>Email verified</th>
+                  <th className="col-actions" />
+                </tr>
+              </thead>
+              <tbody>
+                {pending.map((u) => (
+                  <tr key={u.username}>
+                    <td className="row-label">{u.name || u.username}</td>
+                    <td>{u.username}</td>
+                    <td className="row-label">{u.email || '—'}</td>
+                    <td>
+                      {u.emailVerified ? (
+                        <span className="pill pill-ok">Verified</span>
+                      ) : (
+                        <span className="pill pill-warn">Not yet</span>
+                      )}
+                    </td>
+                    <td className="col-actions">
+                      <button className="btn-primary btn-sm" onClick={() => pick(u.username)}>
+                        Review &amp; approve
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       <div className="panel">
         <h3>All accounts ({users.length})</h3>
@@ -156,6 +206,12 @@ export default function RoleManager({ users, organisation, currentUsername, onSa
 
       <div className="panel">
         <h3>{editing ? `Edit account: ${selected}` : 'Add a new account'}</h3>
+        {editing && form.status === 'pending' && (
+          <div className="banner banner-warn">
+            This is a pending sign-up. Assign squads below, then click <strong>Approve &amp; Save</strong>{' '}
+            to activate the account and grant edit access.
+          </div>
+        )}
         <label className="form-field">
           <span>Account</span>
           <select value={selected} onChange={(e) => pick(e.target.value)}>
@@ -253,7 +309,15 @@ export default function RoleManager({ users, organisation, currentUsername, onSa
       {error && <div className="banner banner-warn">{error}</div>}
 
       <div className="user-actions">
-        <button className="btn-primary" onClick={save}>
+        {editing && form.status === 'pending' && (
+          <button className="btn-primary" onClick={() => save(true)}>
+            Approve &amp; Save
+          </button>
+        )}
+        <button
+          className={editing && form.status === 'pending' ? 'btn-secondary' : 'btn-primary'}
+          onClick={() => save(false)}
+        >
           {editing ? 'Save Changes' : 'Add Account'}
         </button>
         {editing && selected !== currentUsername && (

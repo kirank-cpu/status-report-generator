@@ -13,6 +13,7 @@ const store = require('./reportStore');
 const users = require('./userStore');
 const org = require('./orgStore');
 const resets = require('./resetStore');
+const verifications = require('./verifyStore');
 const mailer = require('./mailer');
 const presence = require('./presenceStore');
 
@@ -54,7 +55,43 @@ app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body || {};
   const user = await users.verifyLogin(username, password);
   if (!user) return res.status(401).json({ error: 'Invalid username or password.' });
+  if (!user.emailVerified) {
+    return res.status(403).json({
+      error: 'Please verify your email first — check your inbox for the verification link.',
+    });
+  }
   res.json(user);
+});
+
+// Self-service sign-up. Creates a pending, unverified employee and emails a
+// verification link. Generic response either way (no account-exists probing
+// beyond the explicit "taken" validation errors users need to see).
+app.post('/api/auth/signup', async (req, res) => {
+  const { username, email, password, name } = req.body || {};
+  const { user, error } = await users.signup({ username, email, password, name });
+  if (error) return res.status(400).json({ error });
+  try {
+    const { token } = await verifications.createToken(user.username);
+    const link = `${baseUrl(req)}/verify-email?token=${token}`;
+    await mailer.sendVerificationEmail(user.email, link, verifications.TTL_MINUTES);
+  } catch (err) {
+    console.error('signup verification email error:', err);
+  }
+  res.status(201).json({ ok: true, message: 'Account created. Check your email to verify your address.' });
+});
+
+// Verify an email address from the link's token.
+app.post('/api/auth/verify-email', async (req, res) => {
+  const { token } = req.body || {};
+  if (!token) return res.status(400).json({ error: 'token is required.' });
+  const username = await verifications.usernameForToken(token);
+  if (!username) {
+    return res.status(400).json({ error: 'This verification link is invalid or has expired.' });
+  }
+  const { error } = await users.verifyEmail(username);
+  if (error) return res.status(400).json({ error });
+  await verifications.consumeToken(token);
+  res.json({ ok: true });
 });
 
 // Change password while signed in: requires the current password.

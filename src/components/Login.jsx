@@ -2,7 +2,7 @@ import { useState } from 'react';
 
 // Credential sign-in. Accounts live in the backend user store; this validates
 // against it but remains a soft UI gate, not real security.
-export default function Login({ authenticate, onLogin, onForgot }) {
+export default function Login({ authenticate, onLogin, onForgot, onSignUp }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -71,6 +71,11 @@ export default function Login({ authenticate, onLogin, onForgot }) {
         {onForgot && (
           <button type="button" className="link-btn" onClick={onForgot}>
             Forgot password?
+          </button>
+        )}
+        {onSignUp && (
+          <button type="button" className="link-btn" onClick={onSignUp}>
+            New here? Create an account
           </button>
         )}
       </form>

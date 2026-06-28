@@ -58,6 +58,14 @@ const SCHEMA = [
     used       INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
   )`,
+  // One-time email-verification tokens (sign-up flow). Same single-use shape.
+  `CREATE TABLE IF NOT EXISTS email_verifications (
+    token      TEXT PRIMARY KEY,
+    username   TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used       INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  )`,
 ];
 
 // Additive migrations for databases created before a column existed. Each is
@@ -69,6 +77,11 @@ const MIGRATIONS = [
   'ALTER TABLE users ADD COLUMN email TEXT',
   // Track who last saved a report (username) for the "last modified by" display.
   'ALTER TABLE reports ADD COLUMN modified_by TEXT',
+  // Sign-up flow: email verification + admin approval state. Existing rows
+  // (admin-created/seeded accounts) default to verified + active so they keep
+  // working; only self-signed-up users start unverified/pending.
+  "ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1",
+  "ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'active'",
 ];
 
 const isDuplicateColumn = (err) => /duplicate column/i.test(err?.message || '');
