@@ -18,10 +18,18 @@ app.use(cors());
 // Reports embed every squad's tables/highlights, so payloads are large.
 app.use(express.json({ limit: '25mb' }));
 
+// Liveness check — must answer the moment the process is listening, so it stays
+// ABOVE the DB gate below. Render uses this to confirm the port is up; gating it
+// on the database would make a slow/misconfigured DB fail the whole deploy.
+app.get('/api/health', (_req, res) => res.json({ ok: true }));
+
 // Seed default accounts on first run so logins work out of the box. Seeding (and
-// the schema it depends on) is async now, so gate every request on it: the first
-// request waits for the database to be ready, the rest resolve instantly.
+// the schema it depends on) is async now, so gate the data routes on it: the
+// first request waits for the database to be ready, the rest resolve instantly.
 const dbReady = users.seedUsers();
+// Attach a handler so a startup DB failure logs instead of surfacing as an
+// unhandled rejection; per-request awaits below still see the same promise.
+dbReady.catch((err) => console.error('Database initialisation failed:', err));
 app.use(async (_req, res, next) => {
   try {
     await dbReady;
@@ -31,8 +39,6 @@ app.use(async (_req, res, next) => {
     res.status(503).json({ error: 'Database unavailable' });
   }
 });
-
-app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
 // ── Auth + users ──────────────────────────────────────────────────────────
 app.post('/api/auth/login', async (req, res) => {
