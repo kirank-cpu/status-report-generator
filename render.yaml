@@ -1,0 +1,24 @@
+# Render Blueprint — one service that builds the React app and serves it together
+# with the API on a single port. Data lives in Turso (set the two secrets below in
+# the Render dashboard), so the free, ephemeral instance never loses reports.
+#
+# Deploy: Render dashboard → New + → Blueprint → pick this repo → fill in
+# TURSO_DATABASE_URL and TURSO_AUTH_TOKEN when prompted.
+services:
+  - type: web
+    name: status-report-generator
+    runtime: node
+    plan: free
+    # Install root (Vite build) + server deps, then build the SPA into ./dist.
+    buildCommand: npm install && npm --prefix server install && npm run build
+    # server.js serves ./dist and the /api routes on $PORT (Render sets PORT).
+    startCommand: npm --prefix server start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # Secrets — entered in the dashboard, never committed (sync: false).
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
