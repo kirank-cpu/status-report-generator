@@ -54,15 +54,18 @@ The deploy is driven by [`render.yaml`](render.yaml):
 
 **Password-reset email (optional but recommended)**
 
-The "Forgot password" flow emails a reset link via Gmail SMTP. Set these in
-Render → Environment (see [`server/.env.example`](server/.env.example)):
+The "Forgot password" flow emails a reset link via the **Brevo HTTP API**. (We use
+an HTTP API, not SMTP, because hosts like Render's free plan block outbound SMTP
+ports.) Create a Brevo API key and verify a single sender address — no domain
+required — then set these in Render → Environment (see
+[`server/.env.example`](server/.env.example)):
 
 | Variable | Purpose |
 | --- | --- |
 | `APP_URL` | Public base URL for links, e.g. `https://status-report-generator.onrender.com` |
-| `GMAIL_USER` | The Gmail address that sends the email |
-| `GMAIL_APP_PASSWORD` | A Google **App Password** (needs 2-Step Verification), not your normal password |
-| `MAIL_FROM` | Optional display name, e.g. `MSR Generator <you@gmail.com>` |
+| `BREVO_API_KEY` | Brevo API key (`xkeysib-…`) |
+| `MAIL_FROM_EMAIL` | The verified Brevo sender address |
+| `MAIL_FROM_NAME` | Optional display name, e.g. `MSR Generator` |
 
 If these are unset, reset links are logged to the server console instead of
 emailed (handy for local dev). Users set their recovery email under **Account &

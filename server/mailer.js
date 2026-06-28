@@ -1,27 +1,24 @@
 // ─── Mailer ──────────────────────────────────────────────────────────────────
-// Sends transactional email (currently just password-reset links) via Gmail SMTP
-// using nodemailer. Configure with a Gmail address + an App Password (requires
-// 2-Step Verification on the account):
+// Sends transactional email (password-reset links) via Brevo's HTTP API. We use
+// HTTP rather than SMTP because hosts like Render's free plan block outbound SMTP
+// ports (25/465/587) — an API call over HTTPS (443) is not blocked.
 //
-//   GMAIL_USER=you@gmail.com
-//   GMAIL_APP_PASSWORD=xxxxxxxxxxxxxxxx   # 16-char app password, no spaces
-//   MAIL_FROM="MSR Generator <you@gmail.com>"   # optional display name
+// Configure with a Brevo API key and a verified sender address (verify a single
+// sender in the Brevo dashboard — no domain required):
+//
+//   BREVO_API_KEY=xkeysib-...
+//   MAIL_FROM_EMAIL=you@gmail.com          # must be a verified Brevo sender
+//   MAIL_FROM_NAME=MSR Generator           # optional display name
 //
 // When unconfigured (e.g. local dev), email is not sent — the link is logged to
 // the server console instead, so the flow stays testable without credentials.
 
-const nodemailer = require('nodemailer');
+const API_KEY = process.env.BREVO_API_KEY;
+const FROM_EMAIL = process.env.MAIL_FROM_EMAIL;
+const FROM_NAME = process.env.MAIL_FROM_NAME || 'MSR Generator';
+const BREVO_URL = 'https://api.brevo.com/v3/smtp/email';
 
-const USER = process.env.GMAIL_USER;
-const PASS = process.env.GMAIL_APP_PASSWORD;
-const FROM = process.env.MAIL_FROM || (USER ? `MSR Generator <${USER}>` : undefined);
-
-const transport =
-  USER && PASS
-    ? nodemailer.createTransport({ service: 'gmail', auth: { user: USER, pass: PASS } })
-    : null;
-
-const isConfigured = () => !!transport;
+const isConfigured = () => !!(API_KEY && FROM_EMAIL);
 
 const resetBody = (link, ttlMinutes) => ({
   text:
@@ -43,14 +40,33 @@ const resetBody = (link, ttlMinutes) => ({
 });
 
 // Sends a reset link to `to`. Returns { delivered } — false when email is not
-// configured (link was logged instead). Throws only on an actual send failure.
+// configured (link was logged instead). Throws on an actual send failure so the
+// caller can log it (the HTTP layer still returns a generic response to users).
 const sendResetEmail = async (to, link, ttlMinutes) => {
-  if (!transport) {
+  if (!isConfigured()) {
     console.log(`[mailer] email not configured — reset link for ${to}: ${link}`);
     return { delivered: false };
   }
   const { text, html } = resetBody(link, ttlMinutes);
-  await transport.sendMail({ from: FROM, to, subject: 'Reset your MSR Generator password', text, html });
+  const res = await fetch(BREVO_URL, {
+    method: 'POST',
+    headers: {
+      'api-key': API_KEY,
+      'content-type': 'application/json',
+      accept: 'application/json',
+    },
+    body: JSON.stringify({
+      sender: { name: FROM_NAME, email: FROM_EMAIL },
+      to: [{ email: to }],
+      subject: 'Reset your MSR Generator password',
+      textContent: text,
+      htmlContent: html,
+    }),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(`Brevo send failed (${res.status}): ${detail}`);
+  }
   return { delivered: true };
 };
 
