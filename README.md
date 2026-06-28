@@ -14,6 +14,11 @@ A React app for preparing Monthly Status Reports across multiple squads and expo
 - **Custom slides** — any squad can add extra slides (title + bullet content; indent a line with two spaces for a sub-bullet).
 - **Collective summary** — an "Overall Summary" slide with a cross-squad table and overall execution/defect pie charts.
 - **Branded deck** — magenta title and thank-you slides, footer with company name and page numbers.
+- **Self-service sign-up + admin approval** — new users register from the login
+  page (username, personal email, password), verify their email via a link, and
+  can then view every report read-only. An admin reviews them under **Manage
+  Roles → Pending sign-ups**, assigns squads, and approves to grant edit access.
+  Set `BLOCKED_EMAIL_DOMAINS` (comma-separated) to refuse organisational domains.
 - **Real-time collaboration** — see who currently has each report open (on the
   home page and as initials in the report header), who last saved it, and edit
   alongside others: each section (execution, automation, defects, deliverables,

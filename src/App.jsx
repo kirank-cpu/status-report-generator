@@ -21,6 +21,8 @@ import RoleManager from './components/RoleManager';
 import Login from './components/Login';
 import ForgotPassword from './components/ForgotPassword';
 import ResetPassword from './components/ResetPassword';
+import SignUp from './components/SignUp';
+import VerifyEmail from './components/VerifyEmail';
 import AccountModal from './components/AccountModal';
 import MsrArchive from './components/MsrArchive';
 import ProfileMenu from './components/ProfileMenu';
@@ -52,6 +54,8 @@ import {
   updateEmail,
   forgotPassword,
   resetPassword,
+  signup,
+  verifyEmail,
 } from './api/users';
 import { getOrganisation, saveOrganisation } from './api/organisation';
 
@@ -104,11 +108,13 @@ function overlayPending(serverDoc, localDoc, pending) {
   return doc;
 }
 
-// Which signed-out page the current URL maps to ('login' | 'forgot' | 'reset').
+// Which signed-out page the current URL maps to.
 function initialPublicView() {
   const p = window.location.pathname;
   if (p === '/reset-password') return 'reset';
   if (p === '/forgot-password') return 'forgot';
+  if (p === '/verify-email') return 'verify';
+  if (p === '/signup') return 'signup';
   return 'login';
 }
 
@@ -234,6 +240,8 @@ export default function App() {
         const unchanged =
           fresh.role === cur.role &&
           fresh.name === cur.name &&
+          fresh.status === cur.status &&
+          fresh.email === cur.email &&
           JSON.stringify(fresh.squads || []) === JSON.stringify(cur.squads || []);
         return unchanged ? cur : { ...cur, ...fresh };
       });
@@ -469,7 +477,16 @@ export default function App() {
   // ── Pre-login navigation (signed out) ─────────────────────────────────────
   const goPublic = (view) => {
     setPublicView(view);
-    const path = view === 'forgot' ? '/forgot-password' : view === 'reset' ? '/reset-password' : '/login';
+    const path =
+      view === 'forgot'
+        ? '/forgot-password'
+        : view === 'reset'
+          ? '/reset-password'
+          : view === 'signup'
+            ? '/signup'
+            : view === 'verify'
+              ? '/verify-email'
+              : '/login';
     if (window.location.pathname !== path) window.history.pushState({}, '', path);
   };
 
@@ -655,8 +672,12 @@ export default function App() {
   // Employees may own several squads; resolve their refs against the open report.
   const mySquadIds =
     session?.role === 'employee' && state ? resolveSquadIds(state.teams, session.squads) : new Set();
-  const squadNotFound = session?.role === 'employee' && !!state && mySquadIds.size === 0;
-  const canEditSquad = (squadId) => isManager || mySquadIds.has(squadId);
+  // A newly signed-up user awaiting admin approval: read-only everywhere until
+  // approved and assigned squads (requirements 5 & 6).
+  const isPending = session?.status === 'pending';
+  const squadNotFound =
+    session?.role === 'employee' && !isPending && !!state && mySquadIds.size === 0;
+  const canEditSquad = (squadId) => isManager || (!isPending && mySquadIds.has(squadId));
 
   // ── Report-content editing (operate on the open report) ───────────────────
   // Report meta + team/project/squad shape go through the structure patch, so
@@ -867,13 +888,26 @@ export default function App() {
     e.target.value = '';
   };
 
-  // The reset link is reachable whether or not a session exists (a logged-in user
-  // may still click it); finishing the reset drops them at sign in.
+  // The reset/verify links are reachable whether or not a session exists (a
+  // logged-in user may still click them); finishing drops them at sign in.
   if (publicView === 'reset') {
     return (
       <ResetPassword
         token={resetToken}
         onReset={(token, newPassword) => resetPassword(token, newPassword)}
+        onBack={() => {
+          if (session) signOut();
+          goPublic('login');
+        }}
+      />
+    );
+  }
+
+  if (publicView === 'verify') {
+    return (
+      <VerifyEmail
+        token={resetToken}
+        onVerify={(token) => verifyEmail(token)}
         onBack={() => {
           if (session) signOut();
           goPublic('login');
@@ -891,8 +925,21 @@ export default function App() {
         />
       );
     }
+    if (publicView === 'signup') {
+      return (
+        <SignUp
+          onSignUp={(username, email, password) => signup(username, email, password)}
+          onBack={() => goPublic('login')}
+        />
+      );
+    }
     return (
-      <Login authenticate={authFn} onLogin={handleLogin} onForgot={() => goPublic('forgot')} />
+      <Login
+        authenticate={authFn}
+        onLogin={handleLogin}
+        onForgot={() => goPublic('forgot')}
+        onSignUp={() => goPublic('signup')}
+      />
     );
   }
 
@@ -1201,6 +1248,12 @@ export default function App() {
                     })}
                   </ol>
                 </nav>
+              )}
+              {isPending && (
+                <div className="banner banner-view">
+                  Your account is awaiting admin approval. You can view every report, but editing
+                  unlocks once an admin approves your sign-up and assigns you a squad.
+                </div>
               )}
               {squadNotFound && (
                 <div className="banner banner-warn">

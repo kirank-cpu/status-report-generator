@@ -39,26 +39,35 @@ const resetBody = (link, ttlMinutes) => ({
     `</div>`,
 });
 
-// Sends a reset link to `to`. Returns { delivered } — false when email is not
-// configured (link was logged instead). Throws on an actual send failure so the
-// caller can log it (the HTTP layer still returns a generic response to users).
-const sendResetEmail = async (to, link, ttlMinutes) => {
-  if (!isConfigured()) {
-    console.log(`[mailer] email not configured — reset link for ${to}: ${link}`);
-    return { delivered: false };
-  }
-  const { text, html } = resetBody(link, ttlMinutes);
+const verifyBody = (link, ttlMinutes) => ({
+  text:
+    `Hi there!,\n\n` +
+    `Welcome to Status Report Generator!\n` +
+    `Confirm your email to activate your account (link valid for ${Math.round(ttlMinutes / 60)} hours):\n${link}\n\n` +
+    `After verifying, an admin will review your sign-up and grant access. ` +
+    `If you didn't create this account, you can ignore this email.`,
+  html:
+    `<div style="font-family:Segoe UI,Arial,sans-serif;max-width:480px;margin:auto">` +
+    `<h2 style="color:#b5179e">Confirm your email</h2>` +
+    `<p>Welcome to Status Report Generator! Confirm your email to activate your account.</p>` +
+    `<p><a href="${link}" style="display:inline-block;background:#b5179e;color:#fff;` +
+    `padding:10px 18px;border-radius:6px;text-decoration:none">Verify my email</a></p>` +
+    `<p style="color:#666;font-size:13px">This link is valid for ${Math.round(ttlMinutes / 60)} hours. ` +
+    `If the button doesn't work, copy this URL into your browser:<br>` +
+    `<a href="${link}">${link}</a></p>` +
+    `<p style="color:#666;font-size:13px">After verifying, an admin will review your sign-up and grant access.</p>` +
+    `</div>`,
+});
+
+// Low-level send via Brevo. Throws on a real send failure so callers can log it.
+const send = async (to, subject, text, html) => {
   const res = await fetch(BREVO_URL, {
     method: 'POST',
-    headers: {
-      'api-key': API_KEY,
-      'content-type': 'application/json',
-      accept: 'application/json',
-    },
+    headers: { 'api-key': API_KEY, 'content-type': 'application/json', accept: 'application/json' },
     body: JSON.stringify({
       sender: { name: FROM_NAME, email: FROM_EMAIL },
       to: [{ email: to }],
-      subject: 'Reset your MSR Generator password',
+      subject,
       textContent: text,
       htmlContent: html,
     }),
@@ -70,4 +79,26 @@ const sendResetEmail = async (to, link, ttlMinutes) => {
   return { delivered: true };
 };
 
-module.exports = { sendResetEmail, isConfigured };
+// Sends a reset link to `to`. Returns { delivered } — false when email is not
+// configured (link was logged instead). Throws on an actual send failure so the
+// caller can log it (the HTTP layer still returns a generic response to users).
+const sendResetEmail = async (to, link, ttlMinutes) => {
+  if (!isConfigured()) {
+    console.log(`[mailer] email not configured — reset link for ${to}: ${link}`);
+    return { delivered: false };
+  }
+  const { text, html } = resetBody(link, ttlMinutes);
+  return send(to, 'Reset your MSR Generator password', text, html);
+};
+
+// Sends a sign-up email-verification link.
+const sendVerificationEmail = async (to, link, ttlMinutes) => {
+  if (!isConfigured()) {
+    console.log(`[mailer] email not configured — verification link for ${to}: ${link}`);
+    return { delivered: false };
+  }
+  const { text, html } = verifyBody(link, ttlMinutes);
+  return send(to, 'Verify your MSR Generator email', text, html);
+};
+
+module.exports = { sendResetEmail, sendVerificationEmail, isConfigured };

@@ -1509,6 +1509,41 @@ textarea {
   50% { opacity: 0.35; }
 }
 
+/* ---------- Sign-up warning + pending approval ---------- */
+.login-warn {
+  margin-top: 12px;
+  background: #fff7e6;
+  border: 1px solid #f0d28a;
+  color: #8a6100;
+  font-size: 12.5px;
+  padding: 9px 12px;
+  border-radius: 8px;
+}
+
+.panel-pending {
+  border-left: 3px solid var(--magenta);
+}
+
+.pill {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 9px;
+  border-radius: 999px;
+}
+
+.pill-ok {
+  background: #eafaf1;
+  border: 1px solid #b7e4c7;
+  color: #1e7e46;
+}
+
+.pill-warn {
+  background: #fdecea;
+  border: 1px solid #f5c2bd;
+  color: #c0392b;
+}
+
 /* ---------- Lockable section panels ---------- */
 .panel-head {
   display: flex;
