@@ -3,7 +3,7 @@ import { resolveSquadIds } from '../constants';
 
 const NEW = '__new__';
 
-const blankForm = () => ({ username: '', password: '', name: '', squadIds: new Set() });
+const blankForm = () => ({ username: '', password: '', name: '', email: '', squadIds: new Set() });
 
 // Manager-only screen to create/remove employee accounts and assign each one
 // to any number of squads, including squads in different projects.
@@ -26,6 +26,7 @@ export default function UserManager({ employees, teams, onSave, onRemove }) {
       username: emp.username,
       password: emp.password,
       name: emp.name || '',
+      email: emp.email || '',
       squadIds: resolveSquadIds(teams, emp.squads),
     });
   };
@@ -65,6 +66,7 @@ export default function UserManager({ employees, teams, onSave, onRemove }) {
         username,
         password: form.password,
         name: form.name.trim() || username,
+        email: form.email.trim(),
         role: 'employee',
         squads: squadNames(),
       },
@@ -119,6 +121,15 @@ export default function UserManager({ employees, teams, onSave, onRemove }) {
               value={form.name}
               placeholder="e.g. John Smith"
               onChange={(e) => setField({ name: e.target.value })}
+            />
+          </label>
+          <label className="form-field">
+            <span>Email (for password reset)</span>
+            <input
+              type="email"
+              value={form.email}
+              placeholder="e.g. jsmith@example.com"
+              onChange={(e) => setField({ email: e.target.value })}
             />
           </label>
           <label className="form-field">

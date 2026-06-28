@@ -49,7 +49,27 @@ const SCHEMA = [
     data        TEXT NOT NULL,
     modified_at TEXT NOT NULL
   )`,
+  // One-time password-reset tokens (forgot-password flow). A token is single-use
+  // and short-lived; `used`/`expires_at` are checked when it is redeemed.
+  `CREATE TABLE IF NOT EXISTS password_resets (
+    token      TEXT PRIMARY KEY,
+    username   TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used       INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  )`,
 ];
+
+// Additive migrations for databases created before a column existed. Each is
+// idempotent in practice: re-running on an up-to-date schema raises a
+// "duplicate column" error, which we swallow. (CREATE TABLE IF NOT EXISTS can't
+// add columns to an existing table, so new columns go here.)
+const MIGRATIONS = [
+  // Email enables the password-reset flow; older user rows simply have NULL.
+  'ALTER TABLE users ADD COLUMN email TEXT',
+];
+
+const isDuplicateColumn = (err) => /duplicate column/i.test(err?.message || '');
 
 let execute; // async ({ sql, args }) => { rows, rowsAffected }
 let ready; // Promise resolved once the schema exists
@@ -66,6 +86,13 @@ if (process.env.TURSO_DATABASE_URL) {
   execute = (query) => client.execute(query);
   ready = (async () => {
     for (const sql of SCHEMA) await client.execute(sql);
+    for (const sql of MIGRATIONS) {
+      try {
+        await client.execute(sql);
+      } catch (err) {
+        if (!isDuplicateColumn(err)) throw err;
+      }
+    }
   })();
 } else {
   // ── Local SQLite via Node's built-in driver (dev / test) ────────────────
@@ -74,6 +101,13 @@ if (process.env.TURSO_DATABASE_URL) {
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL');
   for (const sql of SCHEMA) db.exec(sql);
+  for (const sql of MIGRATIONS) {
+    try {
+      db.exec(sql);
+    } catch (err) {
+      if (!isDuplicateColumn(err)) throw err;
+    }
+  }
 
   // Adapt the synchronous built-in driver to the async { rows, rowsAffected }
   // shape the stores expect. Read statements return rows; writes return a count.

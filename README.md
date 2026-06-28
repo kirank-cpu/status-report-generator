@@ -52,6 +52,22 @@ The deploy is driven by [`render.yaml`](render.yaml):
 | Health check | `/api/health` |
 | Secrets | `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` (set in Render → Environment) |
 
+**Password-reset email (optional but recommended)**
+
+The "Forgot password" flow emails a reset link via Gmail SMTP. Set these in
+Render → Environment (see [`server/.env.example`](server/.env.example)):
+
+| Variable | Purpose |
+| --- | --- |
+| `APP_URL` | Public base URL for links, e.g. `https://status-report-generator.onrender.com` |
+| `GMAIL_USER` | The Gmail address that sends the email |
+| `GMAIL_APP_PASSWORD` | A Google **App Password** (needs 2-Step Verification), not your normal password |
+| `MAIL_FROM` | Optional display name, e.g. `MSR Generator <you@gmail.com>` |
+
+If these are unset, reset links are logged to the server console instead of
+emailed (handy for local dev). Users set their recovery email under **Account &
+password** in the profile menu, or admins set it in **Manage Roles**.
+
 **Shipping updates:** push to the default branch — Render rebuilds and redeploys
 automatically. Data persists in Turso across deploys.
 

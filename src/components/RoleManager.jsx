@@ -3,7 +3,7 @@ import { useState } from 'react';
 const NEW = '__new__';
 const ROLES = ['admin', 'manager', 'employee'];
 
-const blankForm = () => ({ username: '', password: '', name: '', role: 'employee', squads: new Set() });
+const blankForm = () => ({ username: '', password: '', name: '', email: '', role: 'employee', squads: new Set() });
 
 // Admin-only screen: create/remove accounts and set each one's role. For
 // employees, pick squad access from the central organisation (matched by name,
@@ -25,6 +25,7 @@ export default function RoleManager({ users, organisation, currentUsername, onSa
       username: u.username,
       password: '',
       name: u.name || '',
+      email: u.email || '',
       role: u.role,
       squads: new Set(u.squads || []),
     });
@@ -56,6 +57,7 @@ export default function RoleManager({ users, organisation, currentUsername, onSa
       username,
       password: form.password, // blank on edit keeps the existing password
       name: form.name.trim() || username,
+      email: form.email.trim(),
       role: form.role,
       squads: form.role === 'employee' ? [...form.squads] : [],
     };
@@ -79,7 +81,7 @@ export default function RoleManager({ users, organisation, currentUsername, onSa
   const changeRole = async (u, role) => {
     setError('');
     const result = await onSave(
-      { username: u.username, password: '', name: u.name, role, squads: u.squads || [] },
+      { username: u.username, password: '', name: u.name, email: u.email || '', role, squads: u.squads || [] },
       u.username
     );
     if (result?.error) setError(result.error);
@@ -182,6 +184,15 @@ export default function RoleManager({ users, organisation, currentUsername, onSa
               value={form.name}
               placeholder="e.g. John Smith"
               onChange={(e) => setField({ name: e.target.value })}
+            />
+          </label>
+          <label className="form-field">
+            <span>Email (for password reset)</span>
+            <input
+              type="email"
+              value={form.email}
+              placeholder="e.g. jsmith@example.com"
+              onChange={(e) => setField({ email: e.target.value })}
             />
           </label>
           <label className="form-field">
