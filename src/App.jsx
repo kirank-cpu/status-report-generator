@@ -24,15 +24,24 @@ import ResetPassword from './components/ResetPassword';
 import AccountModal from './components/AccountModal';
 import MsrArchive from './components/MsrArchive';
 import ProfileMenu from './components/ProfileMenu';
+import PresenceBar from './components/PresenceBar';
 import { exportPptx } from './export/exportPptx';
 import {
   listReports,
   getReport,
   createReport,
-  updateReport,
+  patchSquad,
+  patchStructure,
   deleteReport,
   duplicateReport,
 } from './api/reports';
+import {
+  getHomePresence,
+  heartbeat as heartbeatPresence,
+  acquireLock,
+  releaseLock,
+  leaveReport,
+} from './api/collab';
 import {
   login,
   listUsers,
@@ -70,6 +79,29 @@ function loadSession() {
     /* no session */
   }
   return null;
+}
+
+// Find a squad by id anywhere in a report document (team→project→squad).
+function findSquadInDoc(doc, squadId) {
+  for (const t of doc?.teams || [])
+    for (const p of t.projects || [])
+      for (const q of p.squads || []) if (q.id === squadId) return q;
+  return null;
+}
+
+// Merge a freshly-fetched server document with the local one, keeping this
+// client's in-flight (not-yet-saved) section edits on top so a background sync
+// can't overwrite what the user is currently typing. `pending` is
+// { [squadId]: { field: true, … } } — the sections this client still owns.
+function overlayPending(serverDoc, localDoc, pending) {
+  if (!serverDoc) return serverDoc;
+  const doc = structuredClone(serverDoc);
+  for (const [squadId, fields] of Object.entries(pending || {})) {
+    const local = findSquadInDoc(localDoc, squadId);
+    const target = findSquadInDoc(doc, squadId);
+    if (local && target) for (const f of Object.keys(fields)) target[f] = local[f];
+  }
+  return doc;
 }
 
 // Which signed-out page the current URL maps to ('login' | 'forgot' | 'reset').
@@ -133,6 +165,18 @@ export default function App() {
   const [activeReportId, setActiveReportId] = useState(null);
   const [busyId, setBusyId] = useState(null);
   const [saving, setSaving] = useState(false);
+
+  // ── Collaboration: presence + section locks ───────────────────────────────
+  const [homePresence, setHomePresence] = useState({}); // reportId -> [{username,name}]
+  const [reportPresence, setReportPresence] = useState([]); // who's in the open report
+  const [locks, setLocks] = useState({}); // sectionKey -> { username, name }
+  // Section-scoped saves: accumulate per-squad field changes, flush as patches.
+  const pendingSquadPatches = useRef({}); // squadId -> { field: value }
+  const pendingStructure = useRef(false); // report-settings/structure changed
+  // Last server modified_at we've reconciled locally (to detect others' edits).
+  const lastSyncedRef = useRef(null);
+  // The report we're currently announced in, so we can "leave" it on switch.
+  const presentReportRef = useRef(null);
 
   const fileRef = useRef(null);
   // Set right after loading a report so the autosave effect skips the load itself.
@@ -229,7 +273,11 @@ export default function App() {
     loadOrganisation();
   }, [sessionUser, loadReportList, loadUsers, loadOrganisation]);
 
-  // ── Debounced autosave of the open report ─────────────────────────────────
+  // ── Debounced section-scoped save of the open report ──────────────────────
+  // Rather than overwriting the whole document, flush only the sections this
+  // client changed: a patch per touched squad, plus one structure patch when the
+  // Report Settings shape/meta changed. This is what lets collaborators edit
+  // different sections concurrently without clobbering one another.
   useEffect(() => {
     if (!activeReportId || !state) return;
     if (skipSaveRef.current) {
@@ -238,27 +286,142 @@ export default function App() {
     }
     const canEdit = isManager || resolveSquadIds(state.teams, session?.squads).size > 0;
     if (!canEdit) return;
-    // Persist after a quiet period. setState lives inside the async callback (not
-    // the effect body) so it doesn't trigger cascading synchronous renders.
+    const hasSquad = Object.keys(pendingSquadPatches.current).length > 0;
+    if (!hasSquad && !pendingStructure.current) return;
+
     const t = setTimeout(async () => {
+      const by = session?.username;
       setSaving(true);
       try {
-        const updated = await updateReport(activeReportId, state);
-        setReports((list) =>
-          list.map((r) =>
-            r.id === activeReportId
-              ? { ...r, month: updated.month, title: updated.title, modifiedAt: updated.modifiedAt }
-              : r
-          )
-        );
+        // Snapshot then clear pending, so edits made during the awaits below are
+        // captured by the next flush rather than dropped.
+        const squadPatches = pendingSquadPatches.current;
+        pendingSquadPatches.current = {};
+        const doStructure = pendingStructure.current;
+        pendingStructure.current = false;
+
+        let modifiedAt = null;
+        // Structure first so any newly-added squads exist before we patch their
+        // fields, and so renames/removals land; it preserves existing squads'
+        // stored section data, which the squad patches below then update.
+        if (doStructure) {
+          const res = await patchStructure(activeReportId, state.report, state.teams, by);
+          if (res?.modifiedAt) modifiedAt = res.modifiedAt;
+        }
+        for (const [squadId, patch] of Object.entries(squadPatches)) {
+          const res = await patchSquad(activeReportId, squadId, patch, by);
+          if (res?.modifiedAt) modifiedAt = res.modifiedAt;
+        }
+        if (modifiedAt) {
+          setReports((list) =>
+            list.map((r) =>
+              r.id === activeReportId
+                ? {
+                    ...r,
+                    month: state.report?.month ?? r.month,
+                    title: state.report?.title ?? r.title,
+                    modifiedAt,
+                    modifiedBy: by,
+                    modifiedByName: session?.name || by,
+                  }
+                : r
+            )
+          );
+        }
       } catch {
-        /* keep editing; the next change retries */
+        /* keep editing; the next change retries (pending will repopulate) */
       } finally {
         setSaving(false);
       }
     }, 1000);
     return () => clearTimeout(t);
   }, [state, activeReportId, isManager, session]);
+
+  // ── Presence + locks: heartbeat into the open report every ~3s ─────────────
+  useEffect(() => {
+    if (!activeReportId || !sessionUser) return;
+    const name = session?.name || sessionUser;
+    let cancelled = false;
+    presentReportRef.current = activeReportId;
+
+    const beat = async () => {
+      try {
+        const res = await heartbeatPresence(activeReportId, sessionUser, name);
+        if (cancelled || !res) return;
+        setReportPresence(res.presence || []);
+        setLocks(res.locks || {});
+        // Pull collaborators' changes when the doc moved on — unless we're mid
+        // structural edit (reconciled on flush). Our own in-flight section edits
+        // are preserved by overlaying pending patches on the fetched doc.
+        const serverAt = res.meta?.modifiedAt;
+        if (serverAt && serverAt !== lastSyncedRef.current && !pendingStructure.current) {
+          lastSyncedRef.current = serverAt;
+          try {
+            const fresh = await getReport(activeReportId);
+            if (cancelled) return;
+            const incoming = migrateState(fresh.data) || fresh.data;
+            skipSaveRef.current = true;
+            setState((local) => overlayPending(incoming, local, pendingSquadPatches.current));
+          } catch {
+            /* keep local; the next beat retries */
+          }
+        }
+      } catch {
+        /* transient network blip; the next beat retries */
+      }
+    };
+
+    beat();
+    const iv = setInterval(beat, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(iv);
+      leaveReport(activeReportId, sessionUser).catch(() => {});
+      setReportPresence([]);
+      setLocks({});
+    };
+  }, [activeReportId, sessionUser, session?.name]);
+
+  // ── Home page: poll which reports currently have people in them ────────────
+  useEffect(() => {
+    if (!sessionUser) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const data = await getHomePresence();
+        if (!cancelled) setHomePresence(data || {});
+      } catch {
+        /* ignore; next tick retries */
+      }
+    };
+    poll();
+    const iv = setInterval(poll, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(iv);
+    };
+  }, [sessionUser]);
+
+  // Acquire a section lock when the user starts editing it; returns whether we
+  // got it (false ⇒ someone else holds it and the section stays read-only).
+  const acquireSection = async (section) => {
+    if (!activeReportId || !sessionUser) return false;
+    const res = await acquireLock(activeReportId, section, sessionUser, session?.name || sessionUser);
+    if (res?.locks) setLocks(res.locks);
+    return !!res?.ok;
+  };
+
+  // Release a section lock we hold (on blur / leaving the squad page).
+  const releaseSection = (section) => {
+    if (!activeReportId || !sessionUser) return;
+    releaseLock(activeReportId, section, sessionUser).catch(() => {});
+    setLocks((cur) => {
+      if (cur[section]?.username !== sessionUser) return cur;
+      const next = { ...cur };
+      delete next[section];
+      return next;
+    });
+  };
 
   const handleLogin = (user) => {
     setSession(user);
@@ -318,6 +481,11 @@ export default function App() {
     try {
       const r = await getReport(id);
       const data = migrateState(r.data) || makeInitialState();
+      // Fresh open: clear any stale pending edits and mark this doc version as
+      // synced so the first heartbeat doesn't needlessly refetch.
+      pendingSquadPatches.current = {};
+      pendingStructure.current = false;
+      lastSyncedRef.current = r.modifiedAt || null;
       skipSaveRef.current = true;
       setState(data);
       setActiveReportId(id);
@@ -491,16 +659,27 @@ export default function App() {
   const canEditSquad = (squadId) => isManager || mySquadIds.has(squadId);
 
   // ── Report-content editing (operate on the open report) ───────────────────
-  const updateReportSettings = (patch) =>
-    setState((s) => ({ ...s, report: { ...s.report, ...patch } }));
+  // Report meta + team/project/squad shape go through the structure patch, so
+  // flag it whenever one of these mutators runs.
+  const markStructureDirty = () => {
+    pendingStructure.current = true;
+  };
 
-  const updateTeam = (teamId, patch) =>
+  const updateReportSettings = (patch) => {
+    markStructureDirty();
+    setState((s) => ({ ...s, report: { ...s.report, ...patch } }));
+  };
+
+  const updateTeam = (teamId, patch) => {
+    markStructureDirty();
     setState((s) => ({
       ...s,
       teams: s.teams.map((t) => (t.id === teamId ? { ...t, ...patch } : t)),
     }));
+  };
 
   const addTeam = () => {
+    markStructureDirty();
     const team = makeTeam(`Team ${state.teams.length + 1}`);
     setState((s) => ({ ...s, teams: [...s.teams, team] }));
     setSelected(team.id);
@@ -509,11 +688,13 @@ export default function App() {
   const removeTeam = (teamId) => {
     const team = state.teams.find((t) => t.id === teamId);
     if (!window.confirm(`Remove team "${team?.name}" and all its projects and squads?`)) return;
+    markStructureDirty();
     setState((s) => ({ ...s, teams: s.teams.filter((t) => t.id !== teamId) }));
     setSelected('summary');
   };
 
-  const updateProject = (teamId, projectId, patch) =>
+  const updateProject = (teamId, projectId, patch) => {
+    markStructureDirty();
     setState((s) => ({
       ...s,
       teams: s.teams.map((t) =>
@@ -522,8 +703,10 @@ export default function App() {
           : t
       ),
     }));
+  };
 
   const addProject = (teamId) => {
+    markStructureDirty();
     const team = state.teams.find((t) => t.id === teamId);
     const project = makeProject(`Project ${(team?.projects.length || 0) + 1}`);
     setState((s) => ({
@@ -539,6 +722,7 @@ export default function App() {
     const team = state.teams.find((t) => t.id === teamId);
     const project = team?.projects.find((p) => p.id === projectId);
     if (!window.confirm(`Remove project "${project?.name}" and all its squads?`)) return;
+    markStructureDirty();
     setState((s) => ({
       ...s,
       teams: s.teams.map((t) =>
@@ -548,7 +732,14 @@ export default function App() {
     setSelected(teamId);
   };
 
-  const updateSquad = (teamId, projectId, squadId, patch) =>
+  // Record the changed fields (plus the dirtied `saved` flag) so the next flush
+  // patches only this squad's touched section — not the whole document.
+  const queueSquadPatch = (squadId, patch) => {
+    pendingSquadPatches.current[squadId] = { ...pendingSquadPatches.current[squadId], ...patch };
+  };
+
+  const updateSquad = (teamId, projectId, squadId, patch) => {
+    queueSquadPatch(squadId, { ...patch, saved: false });
     setState((s) => ({
       ...s,
       teams: s.teams.map((t) =>
@@ -569,8 +760,10 @@ export default function App() {
           : t
       ),
     }));
+  };
 
-  const saveSquad = (teamId, projectId, squadId) =>
+  const saveSquad = (teamId, projectId, squadId) => {
+    queueSquadPatch(squadId, { saved: true });
     setState((s) => ({
       ...s,
       teams: s.teams.map((t) =>
@@ -586,8 +779,10 @@ export default function App() {
           : t
       ),
     }));
+  };
 
   const addSquad = (teamId, projectId) => {
+    markStructureDirty();
     const team = state.teams.find((t) => t.id === teamId);
     const project = team?.projects.find((p) => p.id === projectId);
     const squad = makeSquad(`Squad ${(project?.squads.length || 0) + 1}`);
@@ -612,6 +807,7 @@ export default function App() {
     const project = team?.projects.find((p) => p.id === projectId);
     const squad = project?.squads.find((q) => q.id === squadId);
     if (!window.confirm(`Remove squad "${squad?.name}" and all its data?`)) return;
+    markStructureDirty();
     setState((s) => ({
       ...s,
       teams: s.teams.map((t) =>
@@ -785,6 +981,11 @@ export default function App() {
       onUpdateEmail={doUpdateEmail}
     />
   );
+
+  // Collaborators currently in the open report (shown as initials in the header).
+  const presenceBar = activeReportId ? (
+    <PresenceBar users={reportPresence} me={session.username} />
+  ) : null;
   // Shared hidden picker for "Import JSON" (managers only).
   const hiddenFileInput = isManager ? (
     <input ref={fileRef} type="file" accept=".json" hidden onChange={loadJsonFile} />
@@ -851,6 +1052,7 @@ export default function App() {
             isManager={isManager}
             activeReportId={activeReportId}
             busyId={busyId}
+            presence={homePresence}
             onOpen={openReport}
             onNew={newReport}
             onRefresh={loadReportList}
@@ -876,6 +1078,7 @@ export default function App() {
         </div>
         <div className="topbar-actions">
           {saving && <span className="save-hint">Saving…</span>}
+          {presenceBar}
           {profileMenu}
           {hiddenFileInput}
         </div>
@@ -1053,6 +1256,10 @@ export default function App() {
                   onBack={goBack}
                   backLabel={backLabel}
                   canDelete={isManager}
+                  locks={locks}
+                  me={session.username}
+                  onAcquire={acquireSection}
+                  onRelease={releaseSection}
                   onChange={(patch) =>
                     updateSquad(squadMatch.team.id, squadMatch.project.id, squadMatch.squad.id, patch)
                   }

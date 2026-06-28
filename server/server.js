@@ -14,6 +14,7 @@ const users = require('./userStore');
 const org = require('./orgStore');
 const resets = require('./resetStore');
 const mailer = require('./mailer');
+const presence = require('./presenceStore');
 
 // Base URL used to build password-reset links in emails. Prefer an explicit
 // APP_URL (e.g. https://status-report-generator.onrender.com); otherwise derive
@@ -153,13 +154,13 @@ app.get('/api/reports/:id', async (req, res) => {
   res.json(report);
 });
 
-// Create. Body: { data, month?, title? } where data is { report, teams }.
+// Create. Body: { data, month?, title?, modifiedBy? } where data is { report, teams }.
 app.post('/api/reports', async (req, res) => {
-  const { data, month, title } = req.body || {};
+  const { data, month, title, modifiedBy } = req.body || {};
   if (!data || typeof data !== 'object') {
     return res.status(400).json({ error: 'A report "data" object is required' });
   }
-  res.status(201).json(await store.createReport({ data, month, title }));
+  res.status(201).json(await store.createReport({ data, month, title, modifiedBy }));
 });
 
 // Duplicate an existing report into a new archive entry.
@@ -169,13 +170,37 @@ app.post('/api/reports/:id/duplicate', async (req, res) => {
   res.status(201).json(copy);
 });
 
-// Update. Body: { data, month?, title? }. Bumps modified_at.
+// Update. Body: { data, month?, title?, modifiedBy? }. Bumps modified_at.
 app.put('/api/reports/:id', async (req, res) => {
-  const { data, month, title } = req.body || {};
+  const { data, month, title, modifiedBy } = req.body || {};
   if (!data || typeof data !== 'object') {
     return res.status(400).json({ error: 'A report "data" object is required' });
   }
-  const updated = await store.updateReport(req.params.id, { data, month, title });
+  const updated = await store.updateReport(req.params.id, { data, month, title, modifiedBy });
+  if (!updated) return res.status(404).json({ error: 'Report not found' });
+  res.json(updated);
+});
+
+// Section-scoped save: merge a patch into a single squad without touching the
+// rest of the document (lets collaborators edit different sections at once).
+app.patch('/api/reports/:id/squad/:squadId', async (req, res) => {
+  const { patch, modifiedBy } = req.body || {};
+  if (!patch || typeof patch !== 'object') {
+    return res.status(400).json({ error: 'A "patch" object is required' });
+  }
+  const result = await store.patchSquad(req.params.id, req.params.squadId, patch, modifiedBy);
+  if (!result) return res.status(404).json({ error: 'Report or squad not found' });
+  res.json(result);
+});
+
+// Structure-scoped save (Report Settings): apply team/project/squad shape, names
+// and report meta while preserving each squad's section data.
+app.patch('/api/reports/:id/structure', async (req, res) => {
+  const { report, teams, modifiedBy } = req.body || {};
+  if (!Array.isArray(teams)) {
+    return res.status(400).json({ error: 'A "teams" array is required' });
+  }
+  const updated = await store.patchStructure(req.params.id, { report, teams }, modifiedBy);
   if (!updated) return res.status(404).json({ error: 'Report not found' });
   res.json(updated);
 });
@@ -183,6 +208,47 @@ app.put('/api/reports/:id', async (req, res) => {
 app.delete('/api/reports/:id', async (req, res) => {
   const ok = await store.deleteReport(req.params.id);
   if (!ok) return res.status(404).json({ error: 'Report not found' });
+  res.status(204).end();
+});
+
+// ── Presence + section locks (collaboration) ──────────────────────────────
+// Home-page summary: which reports currently have people in them.
+app.get('/api/presence', (_req, res) => res.json(presence.homeSummary()));
+
+// Heartbeat: announce I'm in this report; get back who else is here, the live
+// locks, and the doc's modified metadata (so the client knows when to refetch).
+app.post('/api/reports/:id/presence', async (req, res) => {
+  const { username, name } = req.body || {};
+  if (!username) return res.status(400).json({ error: 'username is required' });
+  presence.heartbeat(req.params.id, username, name);
+  res.json({
+    presence: presence.listPresence(req.params.id),
+    locks: presence.listLocks(req.params.id),
+    meta: await store.getMeta(req.params.id),
+  });
+});
+
+// Acquire (or renew) a section lock. 200 { ok:true } when granted, 409 with the
+// current owner when someone else holds it.
+app.post('/api/reports/:id/lock', (req, res) => {
+  const { username, name, section } = req.body || {};
+  if (!username || !section) return res.status(400).json({ error: 'username and section are required' });
+  const result = presence.acquireLock(req.params.id, section, username, name);
+  res.status(result.ok ? 200 : 409).json({ ...result, locks: presence.listLocks(req.params.id) });
+});
+
+// Release a section lock I hold.
+app.delete('/api/reports/:id/lock', (req, res) => {
+  const { username, section } = req.body || {};
+  if (!username || !section) return res.status(400).json({ error: 'username and section are required' });
+  presence.releaseLock(req.params.id, section, username);
+  res.status(204).end();
+});
+
+// Leave a report (closing the tab / navigating away): clear presence + my locks.
+app.post('/api/reports/:id/leave', (req, res) => {
+  const { username } = req.body || {};
+  if (username) presence.leave(req.params.id, username);
   res.status(204).end();
 });
 

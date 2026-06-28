@@ -53,20 +53,35 @@ const monthOf = (data) => String(data?.report?.month || '').trim();
 const titleOf = (data) => String(data?.report?.title || 'Monthly Status Report').trim();
 
 // Metadata only — never returns the heavy `data` blob, so listing stays light.
+// LEFT JOIN users so the list carries the display name of whoever last saved.
 const listReports = async () =>
-  (await all('SELECT id, month, title, created_at, modified_at FROM reports ORDER BY created_at DESC')).map(
-    (r) => ({
-      id: r.id,
-      month: r.month,
-      title: r.title,
-      createdAt: r.created_at,
-      modifiedAt: r.modified_at,
-    })
-  );
+  (
+    await all(
+      `SELECT r.id, r.month, r.title, r.created_at, r.modified_at, r.modified_by,
+              u.name AS modified_by_name
+         FROM reports r
+         LEFT JOIN users u ON lower(u.username) = lower(r.modified_by)
+        ORDER BY r.created_at DESC`
+    )
+  ).map((r) => ({
+    id: r.id,
+    month: r.month,
+    title: r.title,
+    createdAt: r.created_at,
+    modifiedAt: r.modified_at,
+    modifiedBy: r.modified_by || null,
+    modifiedByName: r.modified_by_name || r.modified_by || null,
+  }));
 
 // Full report with `data` parsed back into an object, or null when unknown.
 const getReport = async (id) => {
-  const row = await get('SELECT * FROM reports WHERE id = ?', [id]);
+  const row = await get(
+    `SELECT r.*, u.name AS modified_by_name
+       FROM reports r
+       LEFT JOIN users u ON lower(u.username) = lower(r.modified_by)
+      WHERE r.id = ?`,
+    [id]
+  );
   if (!row) return null;
   return {
     id: row.id,
@@ -75,35 +90,118 @@ const getReport = async (id) => {
     data: JSON.parse(row.data),
     createdAt: row.created_at,
     modifiedAt: row.modified_at,
+    modifiedBy: row.modified_by || null,
+    modifiedByName: row.modified_by_name || row.modified_by || null,
   };
 };
 
-const createReport = async ({ data, month, title } = {}) => {
+const createReport = async ({ data, month, title, modifiedBy } = {}) => {
   const m = month != null ? String(month).trim() : monthOf(data);
   const t = title != null ? String(title).trim() : titleOf(data);
   const id = makeId();
   const ts = nowIso();
   await run(
-    'INSERT INTO reports (id, month, title, data, created_at, modified_at) VALUES (?, ?, ?, ?, ?, ?)',
-    [id, m, t, JSON.stringify(data ?? {}), ts, ts]
+    'INSERT INTO reports (id, month, title, data, created_at, modified_at, modified_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [id, m, t, JSON.stringify(data ?? {}), ts, ts, modifiedBy || null]
   );
   return getReport(id);
 };
 
 // Updates the document and bumps modified_at. month/title are re-derived from the
 // incoming data (falling back to explicit args), so the columns track the doc.
-const updateReport = async (id, { data, month, title } = {}) => {
+const updateReport = async (id, { data, month, title, modifiedBy } = {}) => {
   const existing = await get('SELECT id FROM reports WHERE id = ?', [id]);
   if (!existing) return null;
   const m = month != null ? String(month).trim() : monthOf(data);
   const t = title != null ? String(title).trim() : titleOf(data);
-  await run('UPDATE reports SET month = ?, title = ?, data = ?, modified_at = ? WHERE id = ?', [
-    m,
-    t,
-    JSON.stringify(data ?? {}),
-    nowIso(),
+  await run(
+    'UPDATE reports SET month = ?, title = ?, data = ?, modified_at = ?, modified_by = ? WHERE id = ?',
+    [m, t, JSON.stringify(data ?? {}), nowIso(), modifiedBy || null, id]
+  );
+  return getReport(id);
+};
+
+// Light metadata for a single report (no `data` blob) — used by the presence
+// poll to tell clients whether the document changed since their last fetch.
+const getMeta = async (id) => {
+  const r = await get(
+    `SELECT r.id, r.month, r.title, r.created_at, r.modified_at, r.modified_by,
+            u.name AS modified_by_name
+       FROM reports r
+       LEFT JOIN users u ON lower(u.username) = lower(r.modified_by)
+      WHERE r.id = ?`,
+    [id]
+  );
+  if (!r) return null;
+  return {
+    id: r.id,
+    month: r.month,
+    title: r.title,
+    createdAt: r.created_at,
+    modifiedAt: r.modified_at,
+    modifiedBy: r.modified_by || null,
+    modifiedByName: r.modified_by_name || r.modified_by || null,
+  };
+};
+
+// Walk the team→project→squad tree, returning the squad with `squadId` or null.
+const findSquad = (data, squadId) => {
+  for (const t of data?.teams || [])
+    for (const p of t.projects || [])
+      for (const q of p.squads || []) if (q.id === squadId) return q;
+  return null;
+};
+
+// Section-scoped save: merge `patch` (e.g. { defects: [...] } or { name: '…' })
+// into a single squad, leaving every other squad/section untouched. This is what
+// lets two people edit different sections of the same squad without clobbering
+// each other — each only patches the fields it holds. Returns light metadata.
+const patchSquad = async (id, squadId, patch, modifiedBy) => {
+  const report = await getReport(id);
+  if (!report) return null;
+  const squad = findSquad(report.data, squadId);
+  if (!squad) return null;
+  Object.assign(squad, patch);
+  const ts = nowIso();
+  await run('UPDATE reports SET data = ?, modified_at = ?, modified_by = ? WHERE id = ?', [
+    JSON.stringify(report.data),
+    ts,
+    modifiedBy || null,
     id,
   ]);
+  return { id, modifiedAt: ts, modifiedBy: modifiedBy || null };
+};
+
+// Structure-scoped save (Report Settings): apply the incoming team/project/squad
+// shape + names + report meta, but PRESERVE each existing squad's section data
+// (matched by id) so a concurrent settings edit can't wipe section work.
+const patchStructure = async (id, incoming, modifiedBy) => {
+  const report = await getReport(id);
+  if (!report) return null;
+  const stored = report.data || { report: {}, teams: [] };
+  const byId = new Map();
+  for (const t of stored.teams || [])
+    for (const p of t.projects || []) for (const q of p.squads || []) byId.set(q.id, q);
+
+  const teams = (incoming.teams || []).map((t) => ({
+    ...t,
+    projects: (t.projects || []).map((p) => ({
+      ...p,
+      squads: (p.squads || []).map((q) => {
+        const prev = byId.get(q.id);
+        // Keep stored section data; take only the (editable) name from settings.
+        return prev ? { ...prev, name: q.name } : q;
+      }),
+    })),
+  }));
+  const data = { report: { ...stored.report, ...(incoming.report || {}) }, teams };
+  const m = monthOf(data);
+  const t = titleOf(data);
+  const ts = nowIso();
+  await run(
+    'UPDATE reports SET month = ?, title = ?, data = ?, modified_at = ?, modified_by = ? WHERE id = ?',
+    [m, t, JSON.stringify(data), ts, modifiedBy || null, id]
+  );
   return getReport(id);
 };
 
@@ -127,8 +225,11 @@ const seedFromState = (state) => createReport({ data: state });
 module.exports = {
   listReports,
   getReport,
+  getMeta,
   createReport,
   updateReport,
+  patchSquad,
+  patchStructure,
   deleteReport,
   duplicateReport,
   seedFromState,
