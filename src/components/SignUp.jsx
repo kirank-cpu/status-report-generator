@@ -43,7 +43,8 @@ export default function SignUp({ onSignUp, onBack }) {
           <>
             <div className="form-success">
               Account created! We’ve emailed you a verification link — click it to activate your
-              account. After verifying, an admin will review your sign-up and grant access.
+              account. After verifying, an admin will review your sign-up and grant access. 
+              You can still sign in to view reports, but you won’t be able to edit them until an admin approves your account.
             </div>
             <button type="button" className="btn-primary login-continue" onClick={onBack}>
               Back to sign in
