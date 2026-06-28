@@ -12,6 +12,14 @@ const cors = require('cors');
 const store = require('./reportStore');
 const users = require('./userStore');
 const org = require('./orgStore');
+const resets = require('./resetStore');
+const mailer = require('./mailer');
+
+// Base URL used to build password-reset links in emails. Prefer an explicit
+// APP_URL (e.g. https://status-report-generator.onrender.com); otherwise derive
+// it from the incoming request so dev/local still produces working links.
+const baseUrl = (req) =>
+  (process.env.APP_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
 
 const app = express();
 app.use(cors());
@@ -46,6 +54,61 @@ app.post('/api/auth/login', async (req, res) => {
   const user = await users.verifyLogin(username, password);
   if (!user) return res.status(401).json({ error: 'Invalid username or password.' });
   res.json(user);
+});
+
+// Change password while signed in: requires the current password.
+app.post('/api/auth/change-password', async (req, res) => {
+  const { username, currentPassword, newPassword } = req.body || {};
+  if (!username || !currentPassword || !newPassword) {
+    return res.status(400).json({ error: 'username, currentPassword and newPassword are required.' });
+  }
+  const { user, error } = await users.changePassword(username, currentPassword, newPassword);
+  if (error) return res.status(400).json({ error });
+  res.json(user);
+});
+
+// Self-service: set/clear the signed-in user's own email (needed for reset).
+app.put('/api/account/email', async (req, res) => {
+  const { username, email } = req.body || {};
+  if (!username) return res.status(400).json({ error: 'username is required.' });
+  const { user, error } = await users.setEmail(username, email);
+  if (error) return res.status(400).json({ error });
+  res.json(user);
+});
+
+// Forgot password: issue a reset token and email a link. Always responds 200 with
+// the same message so the endpoint can't be used to probe which emails exist.
+app.post('/api/auth/forgot-password', async (req, res) => {
+  const { email } = req.body || {};
+  const generic = { ok: true, message: 'If an account with that email exists, a reset link has been sent.' };
+  try {
+    const user = await users.findByEmail(email);
+    if (user && user.email) {
+      const { token } = await resets.createToken(user.username);
+      const link = `${baseUrl(req)}/reset-password?token=${token}`;
+      await mailer.sendResetEmail(user.email, link, resets.TTL_MINUTES);
+    }
+  } catch (err) {
+    // Log, but still return the generic response (don't leak failures/existence).
+    console.error('forgot-password error:', err);
+  }
+  res.json(generic);
+});
+
+// Reset password using a valid token from the email link.
+app.post('/api/auth/reset-password', async (req, res) => {
+  const { token, newPassword } = req.body || {};
+  if (!token || !newPassword) {
+    return res.status(400).json({ error: 'token and newPassword are required.' });
+  }
+  const username = await resets.usernameForToken(token);
+  if (!username) {
+    return res.status(400).json({ error: 'This reset link is invalid or has expired. Please request a new one.' });
+  }
+  const { error } = await users.setPassword(username, newPassword);
+  if (error) return res.status(400).json({ error });
+  await resets.consumeToken(token);
+  res.json({ ok: true });
 });
 
 app.get('/api/users', async (_req, res) => res.json(await users.listUsers()));

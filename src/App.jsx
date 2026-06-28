@@ -19,6 +19,9 @@ import UserManager from './components/UserManager';
 import OrganisationManager from './components/OrganisationManager';
 import RoleManager from './components/RoleManager';
 import Login from './components/Login';
+import ForgotPassword from './components/ForgotPassword';
+import ResetPassword from './components/ResetPassword';
+import AccountModal from './components/AccountModal';
 import MsrArchive from './components/MsrArchive';
 import ProfileMenu from './components/ProfileMenu';
 import { exportPptx } from './export/exportPptx';
@@ -30,7 +33,17 @@ import {
   deleteReport,
   duplicateReport,
 } from './api/reports';
-import { login, listUsers, createUser, updateUser, deleteUser } from './api/users';
+import {
+  login,
+  listUsers,
+  createUser,
+  updateUser,
+  deleteUser,
+  changePassword,
+  updateEmail,
+  forgotPassword,
+  resetPassword,
+} from './api/users';
 import { getOrganisation, saveOrganisation } from './api/organisation';
 
 // Legacy key from the single-document era. Read once to migrate that doc into the
@@ -57,6 +70,14 @@ function loadSession() {
     /* no session */
   }
   return null;
+}
+
+// Which signed-out page the current URL maps to ('login' | 'forgot' | 'reset').
+function initialPublicView() {
+  const p = window.location.pathname;
+  if (p === '/reset-password') return 'reset';
+  if (p === '/forgot-password') return 'forgot';
+  return 'login';
 }
 
 // Maps the app's view state to a URL path so the address bar reflects the page.
@@ -99,6 +120,11 @@ export default function App() {
   const [selected, setSelected] = useState('archive');
   const [adminView, setAdminView] = useState(null); // 'org' | 'roles' | null
   const [exporting, setExporting] = useState(false);
+  // Signed-out page + the open Account modal (signed in).
+  const [publicView, setPublicView] = useState(initialPublicView);
+  const [accountOpen, setAccountOpen] = useState(false);
+  // Reset token from the email link (?token=…); captured once at load.
+  const [resetToken] = useState(() => new URLSearchParams(window.location.search).get('token'));
 
   // Archive list + open-report bookkeeping.
   const [reports, setReports] = useState([]);
@@ -248,6 +274,40 @@ export default function App() {
     setReports([]);
     setAdminView(null);
     setSelected('archive');
+    setAccountOpen(false);
+    // The routing effect no longer manages the URL while signed out, so reset it.
+    setPublicView('login');
+    if (window.location.pathname !== '/login') window.history.pushState({}, '', '/login');
+  };
+
+  // ── Account self-service (signed in) ──────────────────────────────────────
+  // Change the current user's password, surfacing { error } for the modal.
+  const doChangePassword = async (currentPassword, newPassword) => {
+    try {
+      await changePassword(session.username, currentPassword, newPassword);
+      return {};
+    } catch (e) {
+      return { error: e.message };
+    }
+  };
+
+  // Update the current user's email; mirror it into the session + user list.
+  const doUpdateEmail = async (email) => {
+    try {
+      const updated = await updateEmail(session.username, email);
+      setSession((cur) => (cur ? { ...cur, email: updated.email } : cur));
+      setUsers((list) => list.map((u) => (u.username === updated.username ? { ...u, ...updated } : u)));
+      return {};
+    } catch (e) {
+      return { error: e.message };
+    }
+  };
+
+  // ── Pre-login navigation (signed out) ─────────────────────────────────────
+  const goPublic = (view) => {
+    setPublicView(view);
+    const path = view === 'forgot' ? '/forgot-password' : view === 'reset' ? '/reset-password' : '/login';
+    if (window.location.pathname !== path) window.history.pushState({}, '', path);
   };
 
   // ── Open / create / download / duplicate / delete reports ─────────────────
@@ -276,6 +336,9 @@ export default function App() {
   // Keep the address bar in sync with the current view. First write replaces the
   // entry (so /login isn't left in history); later changes push a new entry.
   useEffect(() => {
+    // While signed out, the pre-login views (login/forgot/reset) drive the URL
+    // themselves — don't overwrite it (and keep the reset link's ?token query).
+    if (!session) return;
     const path = pathForState({ session, adminView, activeReportId, selected, hasReport: !!state });
     if (window.location.pathname !== path) {
       if (didRouteInitRef.current) window.history.pushState({}, '', path);
@@ -608,7 +671,34 @@ export default function App() {
     e.target.value = '';
   };
 
-  if (!session) return <Login authenticate={authFn} onLogin={handleLogin} />;
+  // The reset link is reachable whether or not a session exists (a logged-in user
+  // may still click it); finishing the reset drops them at sign in.
+  if (publicView === 'reset') {
+    return (
+      <ResetPassword
+        token={resetToken}
+        onReset={(token, newPassword) => resetPassword(token, newPassword)}
+        onBack={() => {
+          if (session) signOut();
+          goPublic('login');
+        }}
+      />
+    );
+  }
+
+  if (!session) {
+    if (publicView === 'forgot') {
+      return (
+        <ForgotPassword
+          onRequest={(email) => forgotPassword(email)}
+          onBack={() => goPublic('login')}
+        />
+      );
+    }
+    return (
+      <Login authenticate={authFn} onLogin={handleLogin} onForgot={() => goPublic('forgot')} />
+    );
+  }
 
   // The archive is shown when explicitly selected or when no report is open yet.
   const showArchive = selected === 'archive' || !state;
@@ -683,6 +773,16 @@ export default function App() {
       onImportJson={() => fileRef.current?.click()}
       onManageOrg={() => setAdminView('org')}
       onManageRoles={() => setAdminView('roles')}
+      onAccount={() => setAccountOpen(true)}
+    />
+  );
+
+  const accountModal = accountOpen && (
+    <AccountModal
+      user={session}
+      onClose={() => setAccountOpen(false)}
+      onChangePassword={doChangePassword}
+      onUpdateEmail={doUpdateEmail}
     />
   );
   // Shared hidden picker for "Import JSON" (managers only).
@@ -727,6 +827,7 @@ export default function App() {
             />
           )}
         </main>
+        {accountModal}
       </div>
     );
   }
@@ -760,6 +861,7 @@ export default function App() {
           />
         </main>
         {hiddenFileInput}
+        {accountModal}
       </div>
     );
   }
@@ -966,6 +1068,7 @@ export default function App() {
                 !['settings', 'summary', 'users'].includes(selected) && <SummaryView teams={teams} />}
         </main>
       </div>
+      {accountModal}
     </div>
   );
 }

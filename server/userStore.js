@@ -8,6 +8,13 @@ const { execute, ready } = require('./db');
 
 const nowIso = () => new Date().toISOString();
 const ROLES = ['admin', 'manager', 'employee'];
+const MIN_PASSWORD = 6;
+
+// Light email sanity check — not RFC-perfect, just enough to reject obvious junk.
+const isEmail = (s) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s || '').trim());
+
+// Normalize an email to a stored form (trimmed, lowercased) or '' when blank.
+const normalizeEmail = (email) => String(email || '').trim().toLowerCase();
 
 const all = async (sql, args = []) => {
   await ready;
@@ -24,6 +31,7 @@ const safe = (row) =>
   row && {
     username: row.username,
     name: row.name || row.username,
+    email: row.email || '',
     role: row.role,
     squads: JSON.parse(row.squads || '[]'),
     createdAt: row.created_at,
@@ -33,11 +41,27 @@ const safe = (row) =>
 const rawByName = (username) =>
   get('SELECT * FROM users WHERE lower(username) = lower(?)', [String(username || '').trim()]);
 
+// Lookup by email (used by the forgot-password flow). Case-insensitive.
+const rawByEmail = (email) => {
+  const e = normalizeEmail(email);
+  if (!e) return null;
+  return get('SELECT * FROM users WHERE lower(email) = ?', [e]);
+};
+
 const insert = async (u) => {
   const ts = nowIso();
   await run(
-    'INSERT INTO users (username, password, name, role, squads, created_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    [u.username.trim(), u.password, (u.name || u.username).trim(), u.role, JSON.stringify(u.squads || []), ts, ts]
+    'INSERT INTO users (username, password, name, email, role, squads, created_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    [
+      u.username.trim(),
+      u.password,
+      (u.name || u.username).trim(),
+      normalizeEmail(u.email),
+      u.role,
+      JSON.stringify(u.squads || []),
+      ts,
+      ts,
+    ]
   );
   return safe(await rawByName(u.username));
 };
@@ -77,6 +101,17 @@ const upsertUser = async (input, originalUsername = null) => {
   const name = String(input.name || username).trim();
   const squads = role === 'employee' && Array.isArray(input.squads) ? input.squads : [];
 
+  // Email is optional, but if supplied it must look valid and be unique so the
+  // forgot-password flow can resolve a single account from it.
+  const email = normalizeEmail(input.email);
+  if (email && !isEmail(email)) return { error: 'Please enter a valid email address.' };
+  if (email) {
+    const owner = await rawByEmail(email);
+    if (owner && owner.username.toLowerCase() !== (originalUsername || username).toLowerCase()) {
+      return { error: `Email "${email}" is already used by another account.` };
+    }
+  }
+
   const existingSame = await rawByName(username);
   if (originalUsername) {
     const original = await rawByName(originalUsername);
@@ -87,16 +122,75 @@ const upsertUser = async (input, originalUsername = null) => {
     }
     const password = input.password ? input.password : original.password;
     await run(
-      'UPDATE users SET username = ?, password = ?, name = ?, role = ?, squads = ?, modified_at = ? WHERE lower(username) = lower(?)',
-      [username, password, name, role, JSON.stringify(squads), nowIso(), originalUsername]
+      'UPDATE users SET username = ?, password = ?, name = ?, email = ?, role = ?, squads = ?, modified_at = ? WHERE lower(username) = lower(?)',
+      [username, password, name, email, role, JSON.stringify(squads), nowIso(), originalUsername]
     );
     return { user: safe(await rawByName(username)) };
   }
 
   if (existingSame) return { error: `Username "${username}" is already taken.` };
   if (!input.password) return { error: 'Password is required.' };
-  return { user: await insert({ username, password: input.password, name, role, squads }) };
+  return { user: await insert({ username, password: input.password, name, email, role, squads }) };
 };
+
+// Self-service: change a user's password after verifying the current one.
+const changePassword = async (username, currentPassword, newPassword) => {
+  const row = await rawByName(username);
+  if (!row) return { error: 'Account not found.' };
+  if (row.password !== currentPassword) return { error: 'Current password is incorrect.' };
+  if (!newPassword || String(newPassword).length < MIN_PASSWORD) {
+    return { error: `New password must be at least ${MIN_PASSWORD} characters.` };
+  }
+  if (newPassword === currentPassword) {
+    return { error: 'New password must be different from the current one.' };
+  }
+  await run('UPDATE users SET password = ?, modified_at = ? WHERE lower(username) = lower(?)', [
+    newPassword,
+    nowIso(),
+    username,
+  ]);
+  return { user: safe(await rawByName(username)) };
+};
+
+// Set a password directly without the current one — used by the reset-token flow
+// once a token has been verified. Callers MUST validate the token first.
+const setPassword = async (username, newPassword) => {
+  if (!newPassword || String(newPassword).length < MIN_PASSWORD) {
+    return { error: `Password must be at least ${MIN_PASSWORD} characters.` };
+  }
+  const row = await rawByName(username);
+  if (!row) return { error: 'Account not found.' };
+  await run('UPDATE users SET password = ?, modified_at = ? WHERE lower(username) = lower(?)', [
+    newPassword,
+    nowIso(),
+    username,
+  ]);
+  return { user: safe(row) };
+};
+
+// Self-service: update (or clear) the signed-in user's own email.
+const setEmail = async (username, email) => {
+  const row = await rawByName(username);
+  if (!row) return { error: 'Account not found.' };
+  const normalized = normalizeEmail(email);
+  if (normalized && !isEmail(normalized)) return { error: 'Please enter a valid email address.' };
+  if (normalized) {
+    const owner = await rawByEmail(normalized);
+    if (owner && owner.username.toLowerCase() !== username.toLowerCase()) {
+      return { error: 'That email is already used by another account.' };
+    }
+  }
+  await run('UPDATE users SET email = ?, modified_at = ? WHERE lower(username) = lower(?)', [
+    normalized,
+    nowIso(),
+    username,
+  ]);
+  return { user: safe(await rawByName(username)) };
+};
+
+// Resolve an account from an email for the forgot-password flow. Returns the safe
+// user (with username) or null. Never reveals existence to callers directly.
+const findByEmail = async (email) => safe(await rawByEmail(email));
 
 const deleteUser = async (username) => {
   const info = await run('DELETE FROM users WHERE lower(username) = lower(?)', [
@@ -107,10 +201,15 @@ const deleteUser = async (username) => {
 
 module.exports = {
   ROLES,
+  MIN_PASSWORD,
   seedUsers,
   listUsers,
   getUser,
   verifyLogin,
   upsertUser,
   deleteUser,
+  changePassword,
+  setPassword,
+  setEmail,
+  findByEmail,
 };

@@ -11,6 +11,7 @@ process.env.MSR_DB_FILE = TMP_DB;
 
 const request = require('supertest');
 const app = require('./server');
+const resets = require('./resetStore');
 
 const sampleData = (month = 'June 2026', title = 'Monthly Status Report') => ({
   report: { title, month, company: 'Everforth Quinnox' },
@@ -168,5 +169,84 @@ describe('Organisation API', () => {
 
   test('rejects an invalid organisation body', async () => {
     expect((await request(app).put('/api/organisation').send({})).status).toBe(400);
+  });
+});
+
+describe('Account: change password + email', () => {
+  beforeAll(async () => {
+    await request(app)
+      .post('/api/users')
+      .send({ username: 'pwuser', password: 'orig123', name: 'PW User', role: 'employee', squads: ['Servicing Hub'] });
+  });
+
+  test('change-password rejects a wrong current password', async () => {
+    const res = await request(app)
+      .post('/api/auth/change-password')
+      .send({ username: 'pwuser', currentPassword: 'nope', newPassword: 'brandnew1' });
+    expect(res.status).toBe(400);
+  });
+
+  test('change-password enforces a minimum length', async () => {
+    const res = await request(app)
+      .post('/api/auth/change-password')
+      .send({ username: 'pwuser', currentPassword: 'orig123', newPassword: 'short' });
+    expect(res.status).toBe(400);
+  });
+
+  test('change-password updates the password (old fails, new works)', async () => {
+    const ok = await request(app)
+      .post('/api/auth/change-password')
+      .send({ username: 'pwuser', currentPassword: 'orig123', newPassword: 'brandnew1' });
+    expect(ok.status).toBe(200);
+    expect((await request(app).post('/api/auth/login').send({ username: 'pwuser', password: 'orig123' })).status).toBe(401);
+    expect((await request(app).post('/api/auth/login').send({ username: 'pwuser', password: 'brandnew1' })).status).toBe(200);
+  });
+
+  test('account email can be set and is returned on login', async () => {
+    const set = await request(app).put('/api/account/email').send({ username: 'pwuser', email: 'PW@Example.com' });
+    expect(set.status).toBe(200);
+    expect(set.body.email).toBe('pw@example.com'); // normalized to lowercase
+    const login = await request(app).post('/api/auth/login').send({ username: 'pwuser', password: 'brandnew1' });
+    expect(login.body.email).toBe('pw@example.com');
+  });
+
+  test('rejects an invalid email and a duplicate email', async () => {
+    expect((await request(app).put('/api/account/email').send({ username: 'pwuser', email: 'not-an-email' })).status).toBe(400);
+    await request(app)
+      .post('/api/users')
+      .send({ username: 'other', password: 'orig123', name: 'Other', role: 'manager' });
+    const dup = await request(app).put('/api/account/email').send({ username: 'other', email: 'pw@example.com' });
+    expect(dup.status).toBe(400);
+  });
+});
+
+describe('Forgot / reset password', () => {
+  beforeAll(async () => {
+    await request(app)
+      .post('/api/users')
+      .send({ username: 'forgetful', password: 'orig123', name: 'For Getful', email: 'forgetful@example.com', role: 'manager' });
+  });
+
+  test('forgot-password always returns a generic 200 (no enumeration)', async () => {
+    const known = await request(app).post('/api/auth/forgot-password').send({ email: 'forgetful@example.com' });
+    const unknown = await request(app).post('/api/auth/forgot-password').send({ email: 'nobody@example.com' });
+    expect(known.status).toBe(200);
+    expect(unknown.status).toBe(200);
+    expect(known.body.message).toBe(unknown.body.message);
+  });
+
+  test('reset-password rejects an invalid token', async () => {
+    const res = await request(app).post('/api/auth/reset-password').send({ token: 'bogus', newPassword: 'freshpass1' });
+    expect(res.status).toBe(400);
+  });
+
+  test('reset-password with a valid token sets the new password', async () => {
+    const { token } = await resets.createToken('forgetful');
+    const res = await request(app).post('/api/auth/reset-password').send({ token, newPassword: 'freshpass1' });
+    expect(res.status).toBe(200);
+    expect((await request(app).post('/api/auth/login').send({ username: 'forgetful', password: 'freshpass1' })).status).toBe(200);
+    // Token is single-use.
+    const reuse = await request(app).post('/api/auth/reset-password').send({ token, newPassword: 'another12' });
+    expect(reuse.status).toBe(400);
   });
 });

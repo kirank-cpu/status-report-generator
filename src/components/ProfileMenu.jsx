@@ -25,6 +25,7 @@ export default function ProfileMenu({
   onImportJson,
   onManageOrg,
   onManageRoles,
+  onAccount,
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
@@ -106,6 +107,11 @@ export default function ProfileMenu({
               <div className="profile-menu-sep" />
             </>
           )}
+
+          <button className="profile-menu-item" role="menuitem" onClick={act(onAccount)}>
+            <span>⚙️</span> Account &amp; password
+          </button>
+          <div className="profile-menu-sep" />
 
           <button className="profile-menu-item danger" role="menuitem" onClick={act(onSignOut)}>
             <span>⎋</span> Sign out
