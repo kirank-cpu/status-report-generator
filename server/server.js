@@ -191,13 +191,13 @@ app.get('/api/reports/:id', async (req, res) => {
   res.json(report);
 });
 
-// Create. Body: { data, month?, title?, modifiedBy? } where data is { report, teams }.
+// Create. Body: { data, month?, title?, modifiedBy?, type? } where data is { report, teams }.
 app.post('/api/reports', async (req, res) => {
-  const { data, month, title, modifiedBy } = req.body || {};
+  const { data, month, title, modifiedBy, type } = req.body || {};
   if (!data || typeof data !== 'object') {
     return res.status(400).json({ error: 'A report "data" object is required' });
   }
-  res.status(201).json(await store.createReport({ data, month, title, modifiedBy }));
+  res.status(201).json(await store.createReport({ data, month, title, modifiedBy, type }));
 });
 
 // Duplicate an existing report into a new archive entry.

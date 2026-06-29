@@ -26,8 +26,7 @@ export default function VerifyEmail({ token, onVerify, onBack }) {
     <div className="login">
       <div className="login-card">
         <div className="login-brand">
-          <span className="brand-mark">MSR</span>
-          <span>Monthly Status Report</span>
+          <span>Status Report</span>
         </div>
         <h2>Email verification</h2>
 

@@ -4,7 +4,11 @@ import {
   makeProject,
   makeSquad,
   makeTeam,
+  makeWsrProject,
+  makeWsrSquad,
   migrateState,
+  normalizeWsrState,
+  blankWsrReport,
   unsavedSquads,
   resolveSquadIds,
   blankReportFromOrg,
@@ -15,6 +19,7 @@ import SummaryView from './components/SummaryView';
 import TeamView from './components/TeamView';
 import ProjectView from './components/ProjectView';
 import SquadEditor from './components/SquadEditor';
+import WsrSquadEditor from './components/WsrSquadEditor';
 import UserManager from './components/UserManager';
 import OrganisationManager from './components/OrganisationManager';
 import RoleManager from './components/RoleManager';
@@ -28,6 +33,7 @@ import MsrArchive from './components/MsrArchive';
 import ProfileMenu from './components/ProfileMenu';
 import PresenceBar from './components/PresenceBar';
 import { exportPptx } from './export/exportPptx';
+import { exportWsrPptx } from './export/exportWsrPptx';
 import {
   listReports,
   getReport,
@@ -158,6 +164,7 @@ export default function App() {
   const [selected, setSelected] = useState('archive');
   const [adminView, setAdminView] = useState(null); // 'org' | 'roles' | null
   const [exporting, setExporting] = useState(false);
+  const [homeTab, setHomeTab] = useState('msr'); // which report type the home page shows
   // Signed-out page + the open Account modal (signed in).
   const [publicView, setPublicView] = useState(initialPublicView);
   const [accountOpen, setAccountOpen] = useState(false);
@@ -497,7 +504,12 @@ export default function App() {
     setBusyId(id);
     try {
       const r = await getReport(id);
-      const data = migrateState(r.data) || makeInitialState();
+      // WSR and MSR documents share the team→project→squad shape but normalize
+      // differently; pick the loader by the report's type.
+      const data =
+        r.type === 'wsr'
+          ? normalizeWsrState(r.data) || blankWsrReport(null)
+          : migrateState(r.data) || makeInitialState();
       // Fresh open: clear any stale pending edits and mark this doc version as
       // synced so the first heartbeat doesn't needlessly refetch.
       pendingSquadPatches.current = {};
@@ -506,10 +518,13 @@ export default function App() {
       skipSaveRef.current = true;
       setState(data);
       setActiveReportId(id);
-      setSelected(
-        desiredSelected ||
-          (session.role === 'employee' ? firstEditableSquadId(data.teams, session) || 'summary' : 'settings')
-      );
+      // MSR employees land on their squad (or the overall summary); WSR has no
+      // summary, so fall back to settings. Managers always land on settings.
+      const fallback =
+        session.role === 'employee'
+          ? firstEditableSquadId(data.teams, session) || (r.type === 'wsr' ? 'settings' : 'summary')
+          : 'settings';
+      setSelected(desiredSelected || fallback);
     } catch (e) {
       window.alert('Could not open report: ' + e.message);
     } finally {
@@ -567,10 +582,12 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, activeReportId]);
 
-  const newReport = async () => {
+  const newReport = async (type = 'msr') => {
     try {
-      // Fresh report: org Team/Project/Squad names only, all data blank.
-      const created = await createReport(blankReportFromOrg(organisation));
+      // Fresh report seeded from the org structure (names only); WSR flattens
+      // teams away (Project → Squad only).
+      const data = type === 'wsr' ? blankWsrReport(organisation) : blankReportFromOrg(organisation);
+      const created = await createReport(data, session?.username, type);
       await loadReportList();
       openReport(created.id);
     } catch (e) {
@@ -594,7 +611,8 @@ export default function App() {
     setBusyId(id);
     try {
       const r = await getReport(id);
-      await exportPptx(r.data);
+      if (r.type === 'wsr') await exportWsrPptx(normalizeWsrState(r.data) || r.data);
+      else await exportPptx(r.data);
     } catch (e) {
       window.alert('Export failed: ' + e.message);
     } finally {
@@ -729,7 +747,8 @@ export default function App() {
   const addProject = (teamId) => {
     markStructureDirty();
     const team = state.teams.find((t) => t.id === teamId);
-    const project = makeProject(`Project ${(team?.projects.length || 0) + 1}`);
+    const name = `Project ${(team?.projects.length || 0) + 1}`;
+    const project = state.report?.type === 'wsr' ? makeWsrProject(name) : makeProject(name);
     setState((s) => ({
       ...s,
       teams: s.teams.map((t) =>
@@ -806,7 +825,8 @@ export default function App() {
     markStructureDirty();
     const team = state.teams.find((t) => t.id === teamId);
     const project = team?.projects.find((p) => p.id === projectId);
-    const squad = makeSquad(`Squad ${(project?.squads.length || 0) + 1}`);
+    const squadName = `Squad ${(project?.squads.length || 0) + 1}`;
+    const squad = state.report?.type === 'wsr' ? makeWsrSquad(squadName) : makeSquad(squadName);
     setState((s) => ({
       ...s,
       teams: s.teams.map((t) =>
@@ -858,7 +878,8 @@ export default function App() {
     }
     setExporting(true);
     try {
-      await exportPptx(state);
+      if (state.report?.type === 'wsr') await exportWsrPptx(state);
+      else await exportPptx(state);
     } catch (e) {
       window.alert('Export failed: ' + e.message);
     } finally {
@@ -948,6 +969,10 @@ export default function App() {
 
   // Resolve the selected id against the open report's team → project → squad tree.
   const teams = state?.teams || [];
+  // WSR documents have no Team level (a single hidden wrapper team holds the
+  // projects); the editor chrome hides teams and uses the WSR squad editor.
+  const isWsr = state?.report?.type === 'wsr';
+  const wsrTeam = isWsr ? teams[0] : null;
   const selectedTeam = teams.find((t) => t.id === selected);
   let projectMatch = null;
   let squadMatch = null;
@@ -1100,6 +1125,8 @@ export default function App() {
             activeReportId={activeReportId}
             busyId={busyId}
             presence={homePresence}
+            tab={homeTab}
+            onTabChange={setHomeTab}
             onOpen={openReport}
             onNew={newReport}
             onRefresh={loadReportList}
@@ -1148,12 +1175,14 @@ export default function App() {
               >
                 ⚙ Report Settings
               </button>
-              <button
-                className={`nav-item ${selected === 'summary' ? 'active' : ''}`}
-                onClick={() => setSelected('summary')}
-              >
-                ☰ Overall Summary
-              </button>
+              {!isWsr && (
+                <button
+                  className={`nav-item ${selected === 'summary' ? 'active' : ''}`}
+                  onClick={() => setSelected('summary')}
+                >
+                  ☰ Overall Summary
+                </button>
+              )}
               {isManager && (
                 <button
                   className={`nav-item ${selected === 'users' ? 'active' : ''}`}
@@ -1163,63 +1192,105 @@ export default function App() {
                 </button>
               )}
 
-              <div className="nav-section">Teams</div>
-              {teams.map((t) => (
-                <div key={t.id} className="nav-team">
+              {/* Squad nav button, shared by both report types. */}
+              {(() => {
+                const squadButton = (t, p, q) => (
                   <button
-                    className={`nav-item nav-team-name ${selected === t.id ? 'active' : ''}`}
-                    onClick={() => setSelected(t.id)}
+                    key={q.id}
+                    className={`nav-item nav-squad ${selected === q.id ? 'active' : ''}`}
+                    onClick={() => setSelected(q.id)}
+                    title={q.saved ? 'Data saved' : 'Data not saved yet'}
                   >
-                    👥 {t.name || 'Untitled Team'}
+                    <span className={`save-dot ${q.saved ? 'is-saved' : 'is-unsaved'}`} />
+                    <span className="nav-squad-name">
+                      {q.name || 'Untitled Squad'}
+                      {mySquadIds.has(q.id) && <span className="nav-mine">you</span>}
+                    </span>
+                    {q.customSlides?.length > 0 && (
+                      <span className="nav-pill">+{q.customSlides.length}</span>
+                    )}
                   </button>
-                  <div className="nav-children">
-                    {t.projects.map((p) => (
-                      <div key={p.id} className="nav-project">
+                );
+
+                // WSR: projects → squads only (no team level).
+                if (isWsr && wsrTeam) {
+                  return (
+                    <>
+                      <div className="nav-section">Projects</div>
+                      {wsrTeam.projects.map((p) => (
+                        <div key={p.id} className="nav-project">
+                          <button
+                            className={`nav-item nav-project-name ${selected === p.id ? 'active' : ''}`}
+                            onClick={() => setSelected(p.id)}
+                          >
+                            📁 {p.name || 'Untitled Project'}
+                          </button>
+                          <div className="nav-children">
+                            {p.squads.map((q) => squadButton(wsrTeam, p, q))}
+                            {isManager && (
+                              <button className="nav-add nav-add-sm" onClick={() => addSquad(wsrTeam.id, p.id)}>
+                                + Add Squad
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                      {isManager && (
+                        <button className="nav-add" onClick={() => addProject(wsrTeam.id)}>
+                          + Add Project
+                        </button>
+                      )}
+                    </>
+                  );
+                }
+
+                // MSR: teams → projects → squads.
+                return (
+                  <>
+                    <div className="nav-section">Teams</div>
+                    {teams.map((t) => (
+                      <div key={t.id} className="nav-team">
                         <button
-                          className={`nav-item nav-project-name ${selected === p.id ? 'active' : ''}`}
-                          onClick={() => setSelected(p.id)}
+                          className={`nav-item nav-team-name ${selected === t.id ? 'active' : ''}`}
+                          onClick={() => setSelected(t.id)}
                         >
-                          📁 {p.name || 'Untitled Project'}
+                          👥 {t.name || 'Untitled Team'}
                         </button>
                         <div className="nav-children">
-                          {p.squads.map((q) => (
-                            <button
-                              key={q.id}
-                              className={`nav-item nav-squad ${selected === q.id ? 'active' : ''}`}
-                              onClick={() => setSelected(q.id)}
-                              title={q.saved ? 'Data saved' : 'Data not saved yet'}
-                            >
-                              <span className={`save-dot ${q.saved ? 'is-saved' : 'is-unsaved'}`} />
-                              <span className="nav-squad-name">
-                                {q.name || 'Untitled Squad'}
-                                {mySquadIds.has(q.id) && <span className="nav-mine">you</span>}
-                              </span>
-                              {q.customSlides?.length > 0 && (
-                                <span className="nav-pill">+{q.customSlides.length}</span>
-                              )}
-                            </button>
+                          {t.projects.map((p) => (
+                            <div key={p.id} className="nav-project">
+                              <button
+                                className={`nav-item nav-project-name ${selected === p.id ? 'active' : ''}`}
+                                onClick={() => setSelected(p.id)}
+                              >
+                                📁 {p.name || 'Untitled Project'}
+                              </button>
+                              <div className="nav-children">
+                                {p.squads.map((q) => squadButton(t, p, q))}
+                                {isManager && (
+                                  <button className="nav-add nav-add-sm" onClick={() => addSquad(t.id, p.id)}>
+                                    + Add Squad
+                                  </button>
+                                )}
+                              </div>
+                            </div>
                           ))}
                           {isManager && (
-                            <button className="nav-add nav-add-sm" onClick={() => addSquad(t.id, p.id)}>
-                              + Add Squad
+                            <button className="nav-add nav-add-sm" onClick={() => addProject(t.id)}>
+                              + Add Project
                             </button>
                           )}
                         </div>
                       </div>
                     ))}
                     {isManager && (
-                      <button className="nav-add nav-add-sm" onClick={() => addProject(t.id)}>
-                        + Add Project
+                      <button className="nav-add" onClick={addTeam}>
+                        + Add Team
                       </button>
                     )}
-                  </div>
-                </div>
-              ))}
-              {isManager && (
-                <button className="nav-add" onClick={addTeam}>
-                  + Add Team
-                </button>
-              )}
+                  </>
+                );
+              })()}
             </>
           )}
         </nav>
@@ -1261,10 +1332,52 @@ export default function App() {
                   edit yet. Ask your manager to make sure a squad with that exact name exists.
                 </div>
               )}
-              {selected === 'settings' && (
-                <ReportSettings report={state.report} onChange={updateReportSettings} readOnly={!isManager} />
-              )}
-              {selected === 'summary' && <SummaryView teams={teams} />}
+              {selected === 'settings' &&
+                (isWsr ? (
+                  <div className="view">
+                    <h2>Report Settings</h2>
+                    <div className="panel">
+                      <div className="form-grid">
+                        <label className="form-field">
+                          <span>Report title</span>
+                          <input
+                            value={state.report.title || ''}
+                            disabled={!isManager}
+                            onChange={(e) => updateReportSettings({ title: e.target.value })}
+                          />
+                        </label>
+                        <label className="form-field">
+                          <span>Week ending / period</span>
+                          <input
+                            value={state.report.period || ''}
+                            disabled={!isManager}
+                            placeholder="e.g. 16th – 24th June 2026"
+                            onChange={(e) => updateReportSettings({ period: e.target.value })}
+                          />
+                        </label>
+                        <label className="form-field">
+                          <span>Company</span>
+                          <input
+                            value={state.report.company || ''}
+                            disabled={!isManager}
+                            onChange={(e) => updateReportSettings({ company: e.target.value })}
+                          />
+                        </label>
+                        <label className="form-field">
+                          <span>Client</span>
+                          <input
+                            value={state.report.client || ''}
+                            disabled={!isManager}
+                            onChange={(e) => updateReportSettings({ client: e.target.value })}
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <ReportSettings report={state.report} onChange={updateReportSettings} readOnly={!isManager} />
+                ))}
+              {selected === 'summary' && !isWsr && <SummaryView teams={teams} />}
               {selected === 'users' && isManager && (
                 <UserManager
                   employees={users.filter((u) => u.role === 'employee')}
@@ -1301,30 +1414,52 @@ export default function App() {
                   onSelectSquad={setSelected}
                 />
               )}
-              {squadMatch && (
-                <SquadEditor
-                  key={squadMatch.squad.id}
-                  squad={squadMatch.squad}
-                  readOnly={!canEditSquad(squadMatch.squad.id)}
-                  onBack={goBack}
-                  backLabel={backLabel}
-                  canDelete={isManager}
-                  locks={locks}
-                  me={session.username}
-                  onAcquire={acquireSection}
-                  onRelease={releaseSection}
-                  onChange={(patch) =>
-                    updateSquad(squadMatch.team.id, squadMatch.project.id, squadMatch.squad.id, patch)
-                  }
-                  onSave={() => saveSquad(squadMatch.team.id, squadMatch.project.id, squadMatch.squad.id)}
-                  onDelete={() =>
-                    removeSquad(squadMatch.team.id, squadMatch.project.id, squadMatch.squad.id)
-                  }
-                />
-              )}
+              {squadMatch &&
+                (isWsr ? (
+                  <WsrSquadEditor
+                    key={squadMatch.squad.id}
+                    squad={squadMatch.squad}
+                    readOnly={!canEditSquad(squadMatch.squad.id)}
+                    onBack={goBack}
+                    backLabel={backLabel}
+                    canDelete={isManager}
+                    locks={locks}
+                    me={session.username}
+                    onAcquire={acquireSection}
+                    onRelease={releaseSection}
+                    onChange={(patch) =>
+                      updateSquad(squadMatch.team.id, squadMatch.project.id, squadMatch.squad.id, patch)
+                    }
+                    onSave={() => saveSquad(squadMatch.team.id, squadMatch.project.id, squadMatch.squad.id)}
+                    onDelete={() =>
+                      removeSquad(squadMatch.team.id, squadMatch.project.id, squadMatch.squad.id)
+                    }
+                  />
+                ) : (
+                  <SquadEditor
+                    key={squadMatch.squad.id}
+                    squad={squadMatch.squad}
+                    readOnly={!canEditSquad(squadMatch.squad.id)}
+                    onBack={goBack}
+                    backLabel={backLabel}
+                    canDelete={isManager}
+                    locks={locks}
+                    me={session.username}
+                    onAcquire={acquireSection}
+                    onRelease={releaseSection}
+                    onChange={(patch) =>
+                      updateSquad(squadMatch.team.id, squadMatch.project.id, squadMatch.squad.id, patch)
+                    }
+                    onSave={() => saveSquad(squadMatch.team.id, squadMatch.project.id, squadMatch.squad.id)}
+                    onDelete={() =>
+                      removeSquad(squadMatch.team.id, squadMatch.project.id, squadMatch.squad.id)
+                    }
+                  />
+                ))}
               {!selectedTeam &&
                 !projectMatch &&
                 !squadMatch &&
+                !isWsr &&
                 !['settings', 'summary', 'users'].includes(selected) && <SummaryView teams={teams} />}
         </main>
       </div>

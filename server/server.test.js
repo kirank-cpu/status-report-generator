@@ -300,6 +300,32 @@ describe('Sign-up, email verification, and approval', () => {
   });
 });
 
+describe('Report types (MSR / WSR)', () => {
+  test('defaults to msr and stores/returns an explicit wsr type', async () => {
+    const msr = await request(app).post('/api/reports').send({ data: sampleData() });
+    expect(msr.body.type).toBe('msr');
+
+    const wsr = await request(app)
+      .post('/api/reports')
+      .send({ data: { report: { title: 'WSR', type: 'wsr' }, teams: [] }, type: 'wsr' });
+    expect(wsr.status).toBe(201);
+    expect(wsr.body.type).toBe('wsr');
+
+    const got = await request(app).get(`/api/reports/${wsr.body.id}`);
+    expect(got.body.type).toBe('wsr');
+    const list = await request(app).get('/api/reports');
+    expect(list.body.find((r) => r.id === wsr.body.id).type).toBe('wsr');
+  });
+
+  test('duplicate preserves the report type', async () => {
+    const wsr = await request(app)
+      .post('/api/reports')
+      .send({ data: { report: { title: 'WSR2', type: 'wsr' }, teams: [] }, type: 'wsr' });
+    const dup = await request(app).post(`/api/reports/${wsr.body.id}/duplicate`);
+    expect(dup.body.type).toBe('wsr');
+  });
+});
+
 describe('Collaboration: section saves, presence, locks', () => {
   // A report with two squads so we can prove section-scoped, non-clobbering saves.
   const collabData = () => ({

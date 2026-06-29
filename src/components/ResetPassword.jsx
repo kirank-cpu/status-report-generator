@@ -30,8 +30,7 @@ export default function ResetPassword({ token, onReset, onBack }) {
     <div className="login">
       <form className="login-card" onSubmit={submit}>
         <div className="login-brand">
-          <span className="brand-mark">MSR</span>
-          <span>Monthly Status Report</span>
+          <span>Status Report</span>
         </div>
         <h2>Choose a new password</h2>
 

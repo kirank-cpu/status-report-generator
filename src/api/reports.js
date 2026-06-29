@@ -8,8 +8,8 @@ export const listReports = () => request('/reports');
 // Full report: { id, month, title, data, createdAt, modifiedAt, modifiedBy, modifiedByName }.
 export const getReport = (id) => request(`/reports/${id}`);
 
-export const createReport = (data, modifiedBy) =>
-  request('/reports', { method: 'POST', body: JSON.stringify({ data, modifiedBy }) });
+export const createReport = (data, modifiedBy, type) =>
+  request('/reports', { method: 'POST', body: JSON.stringify({ data, modifiedBy, type }) });
 
 export const updateReport = (id, data, modifiedBy) =>
   request(`/reports/${id}`, { method: 'PUT', body: JSON.stringify({ data, modifiedBy }) });

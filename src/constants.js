@@ -445,3 +445,120 @@ export const migrateState = (parsed) => {
   }
   return null;
 };
+
+// ─── Weekly Status Report (WSR) ──────────────────────────────────────────────
+// A separate report type with a different per-squad layout (Report Card +
+// Regression tables, no Team grouping). To reuse the existing autosave / locks /
+// routing — all keyed on squad ids within `teams[].projects[].squads[]` — a WSR
+// document still uses that shape but with a single, hidden wrapper team.
+
+export const WSR_TEAM_NAME = '__wsr__';
+
+// One Test-Cases + Defects count set (used for both the Test and Pre-Prod rows).
+const wsrCounts = () => ({
+  designed: 0,
+  passed: 0,
+  fail: 0,
+  blocked: 0,
+  toDo: 0,
+  critical: 0,
+  high: 0,
+  medium: 0,
+  low: 0,
+});
+
+// A regression/automation row in the WSR squad's second table. `completion` is a
+// free-text % (the source decks use manual values that don't map to a formula).
+export const makeWsrRegRow = (name = '') => ({
+  id: uid(),
+  name,
+  total: 0,
+  designed: 0,
+  reworkTotal: 0,
+  reworkInProgress: 0,
+  reworkCompleted: 0,
+  executed: 0,
+  pass: 0,
+  fail: 0,
+  toDo: 0,
+  blockedHold: 0,
+  completion: '',
+});
+
+export const makeWsrSquad = (name = 'New Squad') => ({
+  id: uid(),
+  name,
+  owner: '',
+  period: '',
+  reportCardTitle: '', // e.g. "Report Card – ABL – Sprint 4"; defaults to the squad name
+  userStories: 0,
+  hasPreprod: true,
+  test: wsrCounts(),
+  preprod: wsrCounts(),
+  regression: [makeWsrRegRow()],
+  highlights: [''],
+  plan: [''],
+  risks: [''],
+  saved: false,
+});
+
+export const makeWsrProject = (name = 'New Project') => ({
+  id: uid(),
+  name,
+  squads: [makeWsrSquad('Squad 1')],
+});
+
+// Sum the regression rows into a Total row for the table footer.
+export const wsrRegTotals = (rows = []) => {
+  const keys = ['total', 'designed', 'reworkTotal', 'reworkInProgress', 'reworkCompleted', 'executed', 'pass', 'fail', 'toDo', 'blockedHold'];
+  const sums = Object.fromEntries(keys.map((k) => [k, rows.reduce((a, r) => a + n(r[k]), 0)]));
+  sums.completion = sums.executed > 0 ? `${Math.round((sums.pass / sums.executed) * 100)}%` : '—';
+  return sums;
+};
+
+// Blank WSR document. Carries Project/Squad *names* from the central organisation
+// (Teams are flattened away — WSR has no team level), or a single blank project.
+export const blankWsrReport = (org) => {
+  const projects = [];
+  for (const t of org?.teams || [])
+    for (const p of t.projects || [])
+      projects.push({
+        id: uid(),
+        name: p.name || 'Untitled Project',
+        squads: (p.squads || []).map((q) => makeWsrSquad(q.name || 'Untitled Squad')),
+      });
+  return {
+    report: {
+      title: 'Weekly Status Report',
+      period: '',
+      company: 'Everforth Quinnox',
+      client: 'Shawbrook',
+      type: 'wsr',
+    },
+    teams: [{ id: uid(), name: WSR_TEAM_NAME, projects: projects.length ? projects : [makeWsrProject('Project 1')] }],
+  };
+};
+
+const normalizeWsrSquad = (q) => ({
+  ...makeWsrSquad(q?.name || 'Squad'),
+  ...q,
+  test: { ...wsrCounts(), ...(q?.test || {}) },
+  preprod: { ...wsrCounts(), ...(q?.preprod || {}) },
+  regression: (q?.regression?.length ? q.regression : [makeWsrRegRow()]).map((r) => ({ ...makeWsrRegRow(), ...r, id: r?.id || uid() })),
+  highlights: q?.highlights?.length ? q.highlights : [''],
+  plan: q?.plan?.length ? q.plan : [''],
+  risks: q?.risks?.length ? q.risks : [''],
+  saved: q?.saved ?? true,
+});
+
+// Ensure a loaded WSR document has the expected shape (single team, WSR squads).
+export const normalizeWsrState = (parsed) => {
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.teams)) return null;
+  return {
+    report: { type: 'wsr', ...parsed.report },
+    teams: parsed.teams.map((t) => ({
+      ...t,
+      projects: (t.projects || []).map((p) => ({ ...p, squads: (p.squads || []).map(normalizeWsrSquad) })),
+    })),
+  };
+};
