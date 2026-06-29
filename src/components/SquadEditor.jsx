@@ -1,4 +1,3 @@
-import { useEffect, useRef } from 'react';
 import { automationTotals, completionPct, executionTotals, defectTotals, makeAutomation } from '../constants';
 import { AUTO_COLORS, AUTO_LABELS, DEFECT_COLORS } from '../charts/pie3d';
 import { EXEC_BAR_COLORS } from '../charts/bar';
@@ -9,51 +8,7 @@ import BulletList from './BulletList';
 import CustomSlides from './CustomSlides';
 import Pie3DChart from './Pie3DChart';
 import BarChart from './BarChart';
-
-// One lockable panel. Focusing it (when editable and not held by someone else)
-// acquires the section lock; moving focus out of the panel releases it. While a
-// collaborator holds it, the panel is shown read-only with their name.
-function LockPanel({ sectionKey, title, baseReadOnly, locks, me, onAcquire, onRelease, children }) {
-  const owner = locks?.[sectionKey];
-  const lockedByOther = !!owner && owner.username !== me;
-  const heldByMe = !!owner && owner.username === me;
-  const ro = baseReadOnly || lockedByOther;
-
-  // Release the lock if the panel unmounts while we hold it (e.g. navigating to
-  // another squad/page), since unmount fires no blur. Refs (kept current via an
-  // effect) let the unmount cleanup see the latest state without re-running.
-  const heldRef = useRef(false);
-  const releaseRef = useRef(null);
-  useEffect(() => {
-    heldRef.current = heldByMe;
-    releaseRef.current = () => onRelease?.(sectionKey);
-  });
-  useEffect(() => () => heldRef.current && releaseRef.current?.(), []);
-
-  const handleFocus = () => {
-    if (!baseReadOnly && !lockedByOther && !heldByMe) onAcquire?.(sectionKey);
-  };
-  const handleBlur = (e) => {
-    // Ignore focus moves that stay inside this panel.
-    if (e.currentTarget.contains(e.relatedTarget)) return;
-    if (heldByMe) onRelease?.(sectionKey);
-  };
-
-  return (
-    <section
-      className={`panel lock-panel${lockedByOther ? ' is-locked' : ''}${heldByMe ? ' is-mine' : ''}`}
-      onFocusCapture={handleFocus}
-      onBlurCapture={handleBlur}
-    >
-      <div className="panel-head">
-        <h3>{title}</h3>
-        {lockedByOther && <span className="lock-badge">🔒 {owner.name} is editing</span>}
-        {heldByMe && <span className="lock-badge mine">✏ You’re editing</span>}
-      </div>
-      {children(ro)}
-    </section>
-  );
-}
+import LockPanel from './LockPanel';
 
 export default function SquadEditor({
   squad,

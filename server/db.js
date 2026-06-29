@@ -82,6 +82,8 @@ const MIGRATIONS = [
   // working; only self-signed-up users start unverified/pending.
   "ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 1",
   "ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'active'",
+  // Report kind: 'msr' (Monthly) or 'wsr' (Weekly). Existing reports are MSR.
+  "ALTER TABLE reports ADD COLUMN type TEXT DEFAULT 'msr'",
 ];
 
 const isDuplicateColumn = (err) => /duplicate column/i.test(err?.message || '');

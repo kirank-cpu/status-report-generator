@@ -57,7 +57,7 @@ const titleOf = (data) => String(data?.report?.title || 'Monthly Status Report')
 const listReports = async () =>
   (
     await all(
-      `SELECT r.id, r.month, r.title, r.created_at, r.modified_at, r.modified_by,
+      `SELECT r.id, r.type, r.month, r.title, r.created_at, r.modified_at, r.modified_by,
               u.name AS modified_by_name
          FROM reports r
          LEFT JOIN users u ON lower(u.username) = lower(r.modified_by)
@@ -65,6 +65,7 @@ const listReports = async () =>
     )
   ).map((r) => ({
     id: r.id,
+    type: r.type || 'msr',
     month: r.month,
     title: r.title,
     createdAt: r.created_at,
@@ -85,6 +86,7 @@ const getReport = async (id) => {
   if (!row) return null;
   return {
     id: row.id,
+    type: row.type || 'msr',
     month: row.month,
     title: row.title,
     data: JSON.parse(row.data),
@@ -95,14 +97,15 @@ const getReport = async (id) => {
   };
 };
 
-const createReport = async ({ data, month, title, modifiedBy } = {}) => {
+const createReport = async ({ data, month, title, modifiedBy, type } = {}) => {
   const m = month != null ? String(month).trim() : monthOf(data);
   const t = title != null ? String(title).trim() : titleOf(data);
+  const kind = type === 'wsr' ? 'wsr' : 'msr';
   const id = makeId();
   const ts = nowIso();
   await run(
-    'INSERT INTO reports (id, month, title, data, created_at, modified_at, modified_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    [id, m, t, JSON.stringify(data ?? {}), ts, ts, modifiedBy || null]
+    'INSERT INTO reports (id, type, month, title, data, created_at, modified_at, modified_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, kind, m, t, JSON.stringify(data ?? {}), ts, ts, modifiedBy || null]
   );
   return getReport(id);
 };
@@ -125,7 +128,7 @@ const updateReport = async (id, { data, month, title, modifiedBy } = {}) => {
 // poll to tell clients whether the document changed since their last fetch.
 const getMeta = async (id) => {
   const r = await get(
-    `SELECT r.id, r.month, r.title, r.created_at, r.modified_at, r.modified_by,
+    `SELECT r.id, r.type, r.month, r.title, r.created_at, r.modified_at, r.modified_by,
             u.name AS modified_by_name
        FROM reports r
        LEFT JOIN users u ON lower(u.username) = lower(r.modified_by)
@@ -135,6 +138,7 @@ const getMeta = async (id) => {
   if (!r) return null;
   return {
     id: r.id,
+    type: r.type || 'msr',
     month: r.month,
     title: r.title,
     createdAt: r.created_at,
@@ -216,7 +220,7 @@ const duplicateReport = async (id) => {
   if (!src) return null;
   const copyTitle = `${src.title} (copy)`;
   const data = { ...src.data, report: { ...src.data.report, title: copyTitle } };
-  return createReport({ data, month: src.month, title: copyTitle });
+  return createReport({ data, month: src.month, title: copyTitle, type: src.type });
 };
 
 // One-time import helper: seed the archive from a legacy single-document state.

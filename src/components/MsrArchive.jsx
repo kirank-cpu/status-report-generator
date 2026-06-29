@@ -110,6 +110,11 @@ function Section({ title, reports, isCurrent, isManager, activeReportId, busyId,
   );
 }
 
+const TABS = [
+  { key: 'msr', label: 'Monthly (MSR)', noun: 'MSR' },
+  { key: 'wsr', label: 'Weekly (WSR)', noun: 'WSR' },
+];
+
 export default function MsrArchive({
   reports,
   loading,
@@ -118,6 +123,8 @@ export default function MsrArchive({
   activeReportId,
   busyId,
   presence,
+  tab,
+  onTabChange,
   onOpen,
   onNew,
   onRefresh,
@@ -126,12 +133,17 @@ export default function MsrArchive({
   onDuplicate,
   onDelete,
 }) {
-  const thisMonth = norm(currentMonthLabel());
-  const current = reports.filter((r) => norm(r.month) === thisMonth);
-  const previous = reports.filter((r) => norm(r.month) !== thisMonth);
+  // Reports are split by type into separate tabs; each tab is independent.
+  const ofType = reports.filter((r) => (r.type || 'msr') === tab);
+  const noun = TABS.find((t) => t.key === tab)?.noun || 'report';
 
+  const thisMonth = norm(currentMonthLabel());
   const handlers = { onOpen, onDownloadPptx, onDownloadJson, onDuplicate, onDelete };
   const sectionProps = { isManager, activeReportId, busyId, presence, handlers };
+
+  // MSR groups by month; WSR is a single newest-first list (weekly cadence).
+  const current = ofType.filter((r) => norm(r.month) === thisMonth);
+  const previous = ofType.filter((r) => norm(r.month) !== thisMonth);
 
   return (
     <div className="home-archive">
@@ -145,31 +157,50 @@ export default function MsrArchive({
             ⟳ Refresh
           </button>
           {isManager && (
-            <button className="btn-ghost primary" onClick={onNew} disabled={loading}>
-              + New MSR
+            <button className="btn-ghost primary" onClick={() => onNew(tab)} disabled={loading}>
+              + New {noun}
             </button>
           )}
         </div>
       </div>
 
+      <div className="home-tabs">
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            className={`home-tab ${tab === t.key ? 'active' : ''}`}
+            onClick={() => onTabChange(t.key)}
+          >
+            {t.label}
+            <span className="home-tab-count">{reports.filter((r) => (r.type || 'msr') === t.key).length}</span>
+          </button>
+        ))}
+      </div>
+
       {error && <div className="home-banner">{error}</div>}
       {loading && <p className="home-sub">Loading reports…</p>}
 
-      {!loading && !reports.length && !error && (
+      {!loading && !ofType.length && !error && (
         <div className="home-empty">
-          <p>No reports yet.</p>
+          <p>No {noun} reports yet.</p>
           {isManager ? (
-            <button className="btn-ghost primary" onClick={onNew}>
-              + Create your first report
+            <button className="btn-ghost primary" onClick={() => onNew(tab)}>
+              + Create your first {noun}
             </button>
           ) : (
-            <p>Ask your manager to create this month’s report.</p>
+            <p>Ask your manager to create one.</p>
           )}
         </div>
       )}
 
-      <Section title="Current month" reports={current} isCurrent {...sectionProps} />
-      <Section title="Previous months" reports={previous} {...sectionProps} />
+      {tab === 'msr' ? (
+        <>
+          <Section title="Current month" reports={current} isCurrent {...sectionProps} />
+          <Section title="Previous months" reports={previous} {...sectionProps} />
+        </>
+      ) : (
+        <Section title="All weekly reports" reports={ofType} {...sectionProps} />
+      )}
     </div>
   );
 }

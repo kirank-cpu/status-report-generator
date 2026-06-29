@@ -14,6 +14,10 @@ A React app for preparing Monthly Status Reports across multiple squads and expo
 - **Custom slides** — any squad can add extra slides (title + bullet content; indent a line with two spaces for a sub-bullet).
 - **Collective summary** — an "Overall Summary" slide with a cross-squad table and overall execution/defect pie charts.
 - **Branded deck** — magenta title and thank-you slides, footer with company name and page numbers.
+- **Two report types — Monthly (MSR) & Weekly (WSR)** — the home page has
+  separate MSR/WSR tabs, each with its own create/edit/delete. WSR has no Team
+  level (Project → Squad only) and its own per-squad layout (Report Card +
+  Regression tables, Highlights, Plan, Risks) and PPTX export.
 - **Self-service sign-up + admin approval** — new users register from the login
   page (username, personal email, password), verify their email via a link, and
   can then view every report read-only. An admin reviews them under **Manage
